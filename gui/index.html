@@ -1,0 +1,951 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page Load Compare</title>
+<style>
+:root {
+  --navy-900: #0b1f3a;
+  --navy-800: #12294d;
+  --navy-700: #1e3a8a;
+  --navy-600: #24459e;
+  --navy-100: #e6ecf7;
+
+  --bg: #f3f5f9;
+  --surface: #ffffff;
+  --surface-2: #f8f9fc;
+  --text: #0f172a;
+  --muted: #5b6b82;
+  --border: #dce2ec;
+
+  --a: #1e40af;          /* URL A: navy blue */
+  --a-soft: #e3e9f8;
+  --b: #d97706;          /* URL B: amber, contrasts with navy */
+  --b-soft: #fdf1df;
+  --good: #15803d;
+  --good-soft: #e3f3e8;
+  --bad: #b91c1c;
+  --bad-soft: #fbe6e6;
+  --focus: #60a5fa;
+  --shadow: 0 1px 2px rgba(11, 31, 58, .06), 0 4px 16px rgba(11, 31, 58, .06);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --navy-100: #1a2a47;
+    --bg: #08111f;
+    --surface: #0f1b2e;
+    --surface-2: #13213a;
+    --text: #e6edf7;
+    --muted: #93a3bb;
+    --border: #22334f;
+    --a: #6f97f5;
+    --a-soft: #1a2a4d;
+    --b: #f5a524;
+    --b-soft: #3a2a10;
+    --good: #4ade80;
+    --good-soft: #13301f;
+    --bad: #f87171;
+    --bad-soft: #3a1717;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+}
+header {
+  background: var(--navy-900); color: #fff;
+  padding: 18px 16px;
+}
+.wrap { max-width: 1120px; margin: 0 auto; }
+header .wrap { display: flex; align-items: center; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand svg { flex: none; }
+.brand h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+.brand p { margin: 0; font-size: 12px; color: #a9b8d3; }
+.badge { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,.1); color: #dbe5f5; }
+.badge.ok::before, .badge.bad::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.badge.ok::before { background: #4ade80; } .badge.bad::before { background: #f87171; }
+
+main { padding: 24px 16px 56px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 20px;
+}
+.card + .card, section + section { margin-top: 20px; }
+h2 { font-size: 15px; margin: 0 0 14px; font-weight: 650; }
+.hint { color: var(--muted); font-size: 12px; }
+
+/* Form */
+form { display: grid; gap: 16px; }
+.urls { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.nums { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; }
+@media (max-width: 760px) {
+  .urls { grid-template-columns: 1fr; }
+  .nums { grid-template-columns: 1fr 1fr; }
+  .nums > div:nth-child(3), .nums .actions { grid-column: 1 / -1; }
+  .actions button { flex: 1; }
+}
+@media (max-width: 420px) {
+  .nums { grid-template-columns: 1fr; }
+  .kpis { grid-template-columns: 1fr 1fr !important; }
+  .card { padding: 16px; }
+  .verdict { flex-direction: column; align-items: flex-start; gap: 6px; }
+}
+label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+label .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+.dot.a { background: var(--a); } .dot.b { background: var(--b); }
+input, select {
+  width: 100%; height: 40px; padding: 0 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  font: inherit;
+}
+input:focus, select:focus { outline: 2px solid var(--focus); outline-offset: 1px; border-color: transparent; }
+input:disabled, select:disabled { opacity: .6; }
+.actions { display: flex; gap: 8px; }
+button {
+  height: 40px; padding: 0 22px; border-radius: 8px; border: 1px solid transparent;
+  font: inherit; font-weight: 650; cursor: pointer; white-space: nowrap;
+}
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.btn-run { background: var(--navy-700); color: #fff; min-width: 110px; }
+.btn-run:hover { background: var(--navy-600); }
+.btn-run:disabled { background: var(--muted); cursor: default; }
+.btn-stop { background: transparent; color: var(--bad); border-color: var(--bad); }
+.btn-stop:hover { background: var(--bad-soft); }
+.summary-line { font-size: 13px; color: var(--muted); }
+.mode-switch { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border); cursor: pointer; }
+.mode-switch input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--navy-700); flex: none; cursor: pointer; }
+.mode-switch b { color: var(--text); }
+.mode-switch span { color: var(--muted); font-size: 13px; line-height: 1.45; }
+.mode-switch:has(input:checked) { border-color: var(--navy-700); background: var(--navy-100); }
+.api-fields { display: grid; gap: 12px; grid-template-columns: 140px 1fr 1fr; }
+@media (max-width: 760px) { .api-fields { grid-template-columns: 1fr; } }
+textarea { width: 100%; min-height: 40px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text); font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+textarea:focus { outline: 2px solid var(--focus); outline-offset: 1px; border-color: transparent; }
+label .opt { font-weight: 400; }
+details.advanced { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+details.advanced > summary { list-style: none; cursor: pointer; padding: 11px 14px; font-size: 13px; font-weight: 650;
+  color: var(--text); display: flex; align-items: center; gap: 8px; }
+details.advanced > summary::-webkit-details-marker { display: none; }
+details.advanced > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+details.advanced[open] > summary::before { transform: rotate(90deg); }
+details.advanced > summary .changed { font-weight: 500; font-size: 12px; color: var(--a); }
+.adv-body { padding: 4px 14px 14px; display: grid; gap: 14px; }
+.adv-group h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.adv-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 760px) { .adv-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 420px) { .adv-grid { grid-template-columns: 1fr; } }
+.adv-body input, .adv-body select { background: var(--surface); }
+.check-row { display: flex; align-items: center; gap: 8px; height: 40px; font-size: 13px; color: var(--text); cursor: pointer; }
+.check-row input { width: 17px; height: 17px; accent-color: var(--navy-700); margin: 0; }
+.adv-actions { display: flex; justify-content: flex-end; }
+.btn-link { height: auto; padding: 4px 8px; background: none; border: 0; color: var(--a); font-weight: 600; font-size: 12.5px; }
+.btn-link:hover { text-decoration: underline; }
+.budget { margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; font-weight: 600; }
+.budget.ok { background: var(--good-soft); color: var(--good); }
+.budget.bad { background: var(--bad-soft); color: var(--bad); }
+.summary-line b { color: var(--text); }
+.error { background: var(--bad-soft); color: var(--bad); padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+
+/* Progress */
+.progress-list { display: grid; gap: 14px; }
+.progress-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 6px; }
+.progress-head .url { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.progress-head .count { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.track { height: 8px; border-radius: 999px; background: var(--navy-100); overflow: hidden; }
+.fill { height: 100%; width: 0; border-radius: 999px; transition: width .4s ease; }
+.fill.a { background: var(--a); } .fill.b { background: var(--b); }
+.fill.running { background-image: linear-gradient(90deg, rgba(255,255,255,0) 0, rgba(255,255,255,.35) 50%, rgba(255,255,255,0) 100%); background-size: 200px 100%; background-repeat: no-repeat; animation: shine 1.4s linear infinite; }
+@keyframes shine { from { background-position: -200px 0; } to { background-position: calc(100% + 200px) 0; } }
+@media (prefers-reduced-motion: reduce) { .fill.running { animation: none; } }
+
+/* Results */
+.sites { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
+.sites > *, section, .card { min-width: 0; }
+.sites > .card { margin-top: 0; }
+.site { border-top: 4px solid var(--a); }
+.site.b { border-top-color: var(--b); }
+.site-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.site-head .name { font-weight: 650; word-break: break-all; }
+.site-head a { color: var(--a); font-size: 13px; white-space: nowrap; font-weight: 600; text-decoration: none; }
+.site.b .site-head a { color: var(--b); }
+.site-head a:hover { text-decoration: underline; }
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.kpi { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; }
+.kpi .k { font-size: 11px; color: var(--muted); }
+.kpi .v { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.kpi .v.good { color: var(--good); } .kpi .v.bad { color: var(--bad); }
+.verdict { display: flex; gap: 14px; align-items: center; padding: 16px 20px; border-radius: 12px; margin-bottom: 20px;
+  background: var(--navy-900); color: #fff; }
+.verdict .big { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.verdict .text { font-size: 14px; color: #c9d5ea; }
+.verdict .text b { color: #fff; }
+
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+th.a { color: var(--a); } th.b { color: var(--b); }
+tr.main td { font-weight: 650; background: var(--surface-2); }
+tr:last-child td { border-bottom: 0; }
+td .desc { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+.diff { display: inline-block; min-width: 92px; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 650; text-align: center; }
+.diff.slower { background: var(--bad-soft); color: var(--bad); }
+.diff.faster { background: var(--good-soft); color: var(--good); }
+.diff.same { background: var(--surface-2); color: var(--muted); }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 12px; }
+
+details { margin-top: 20px; }
+summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; }
+pre { background: var(--navy-900); color: #d6e0f0; padding: 14px; border-radius: 8px; font-size: 12px; overflow: auto; max-height: 320px; white-space: pre-wrap; }
+.problem { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--bad-soft); color: var(--bad); font-size: 12.5px; }
+.progress-head .count.bad { color: var(--bad); font-weight: 600; }
+.site.failed { border-top-color: var(--bad); }
+.errors { margin: 10px 0 0; padding-left: 18px; font-size: 12px; color: var(--bad); }
+.empty { text-align: center; color: var(--muted); padding: 36px 16px; }
+.empty svg { color: var(--navy-700); opacity: .5; }
+/* Hints: small (i) icon, one floating tooltip positioned by JS */
+.hint {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-left: 5px; vertical-align: -2px;
+  border-radius: 50%; border: 1px solid currentColor; color: var(--muted);
+  font: 600 10px/1 Georgia, serif; font-style: italic; cursor: help; opacity: .75;
+  user-select: none; flex: none;
+}
+.hint:hover, .hint:focus-visible, .hint[aria-expanded="true"] { opacity: 1; color: var(--a); outline: none; }
+.hint:focus-visible { box-shadow: 0 0 0 2px var(--focus); }
+th .hint { vertical-align: -3px; }
+#tip {
+  position: fixed; z-index: 50; max-width: min(300px, calc(100vw - 24px));
+  padding: 10px 12px; border-radius: 8px;
+  background: var(--navy-900); color: #e6edf7; border: 1px solid #2b4470;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+  font-size: 12.5px; line-height: 1.5; font-weight: 400; text-align: left; white-space: normal;
+  pointer-events: none;
+}
+#tip b { color: #fff; display: block; margin-bottom: 2px; font-size: 13px; }
+#tip .good-value { display: block; margin-top: 6px; color: #fbbf24; font-weight: 600; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="8" fill="#1e3a8a"/>
+        <path d="M7 22a9 9 0 0 1 18 0" fill="none" stroke="#93b4f5" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M16 22l5-7" stroke="#fbbf24" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="16" cy="22" r="2" fill="#fff"/>
+      </svg>
+      <div>
+        <h1>Page Load Compare</h1>
+        <p>Real-browser load timing with k6</p>
+      </div>
+    </div>
+    <span id="k6Badge" class="badge">Checking k6…</span>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <section class="card">
+      <h2>New run</h2>
+      <form id="runForm" novalidate>
+        <div class="urls">
+          <div>
+            <label for="url"><span class="dot a"></span>URL</label>
+            <input id="url" name="url" type="url" placeholder="https://hartak.am/" required>
+          </div>
+          <div>
+            <label for="compareUrl"><span class="dot b"></span>Compare with URL <span style="font-weight:400">(optional)</span></label>
+            <input id="compareUrl" name="compareUrl" type="url" placeholder="https://dev.hartak.am/">
+          </div>
+        </div>
+        <label class="mode-switch" for="apiOnly">
+          <input id="apiOnly" name="apiOnly" type="checkbox" aria-label="API only: plain HTTP requests, no browser">
+          <span><b>API only</b> — send plain HTTP requests, no browser. Measures how fast the server answers
+            (connect, TLS, TTFB, download), not how the page renders. Lighter, so it allows up to 200 users.</span>
+        </label>
+        <div id="apiFields" class="api-fields" hidden>
+          <div>
+            <label for="method">Method</label>
+            <select id="method" name="method">
+              <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option>
+              <option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
+            </select>
+          </div>
+          <div>
+            <label for="headers">Headers <span class="opt">(optional, one per line: Name: value)</span></label>
+            <textarea id="headers" name="headers" rows="2" placeholder="Accept: application/json" spellcheck="false"></textarea>
+          </div>
+          <div>
+            <label for="body">Body <span class="opt">(optional)</span></label>
+            <textarea id="body" name="body" rows="2" placeholder='{"query": "test"}' spellcheck="false"></textarea>
+          </div>
+        </div>
+        <div class="nums">
+          <div>
+            <label for="vus">Parallel users (VUs)</label>
+            <input id="vus" name="vus" type="number" min="1" max="20" value="5" required>
+          </div>
+          <div>
+            <label for="iterations" id="iterationsLabel">Total visits per URL</label>
+            <input id="iterations" name="iterations" type="number" min="1" max="1000" value="30" required>
+          </div>
+          <div id="waitUntilField">
+            <label for="waitUntil">Page counts as loaded at</label>
+            <select id="waitUntil" name="waitUntil">
+              <option value="load">Load event</option>
+              <option value="networkidle">Network idle (+500ms)</option>
+            </select>
+          </div>
+          <div class="actions">
+            <button id="runBtn" class="btn-run" type="submit">Run</button>
+            <button id="stopBtn" class="btn-stop" type="button" hidden>Stop</button>
+          </div>
+        </div>
+        <details class="advanced" id="advanced">
+          <summary>Advanced settings <span class="changed" id="advChanged"></span></summary>
+          <div class="adv-body">
+            <div class="adv-group">
+              <h3>Run</h3>
+              <div class="adv-grid">
+                <div>
+                  <label for="timeoutSec"><span id="timeoutLabel">Timeout per visit (s)</span><span class="hint" tabindex="0" role="button" aria-label="What is timeout?" data-hint="setTimeout">i</span></label>
+                  <input id="timeoutSec" aria-label="Timeout in seconds" type="number" min="1" max="300" placeholder="30">
+                </div>
+                <div>
+                  <label for="timeLimitSec">Time limit per URL (s)<span class="hint" tabindex="0" role="button" aria-label="What is time limit?" data-hint="setLimit">i</span></label>
+                  <input id="timeLimitSec" aria-label="Time limit per URL in seconds" type="number" min="0" max="7200" placeholder="Auto">
+                </div>
+                <div>
+                  <label for="expectStatus">Expected HTTP status<span class="hint" tabindex="0" role="button" aria-label="What is expected status?" data-hint="setStatus">i</span></label>
+                  <input id="expectStatus" aria-label="Expected HTTP status" type="text" placeholder="200" spellcheck="false" autocomplete="off">
+                </div>
+                <div>
+                  <label for="budgetP95Ms">Budget: p95 at most (ms)<span class="hint" tabindex="0" role="button" aria-label="What is budget?" data-hint="setBudget">i</span></label>
+                  <input id="budgetP95Ms" aria-label="Budget: p95 at most, in milliseconds" type="number" min="0" max="600000" placeholder="Off">
+                </div>
+              </div>
+            </div>
+            <div class="adv-group" id="browserSettings">
+              <h3>Browser</h3>
+              <div class="adv-grid">
+                <div>
+                  <label for="screen">Screen size<span class="hint" tabindex="0" role="button" aria-label="What is screen size?" data-hint="setScreen">i</span></label>
+                  <select id="screen" aria-label="Screen size">
+                    <option value="1440x900">Desktop · 1440×900</option>
+                    <option value="1280x800">Laptop · 1280×800</option>
+                    <option value="768x1024">Tablet · 768×1024</option>
+                    <option value="390x844">Mobile · 390×844</option>
+                    <option value="custom">Custom…</option>
+                  </select>
+                </div>
+                <div id="customSize" hidden>
+                  <label for="viewportWidth">Width × height (px)</label>
+                  <div style="display:flex;gap:6px;align-items:center">
+                    <input id="viewportWidth" type="number" min="320" max="3840" value="1440" aria-label="Screen width">
+                    <span style="color:var(--muted)">×</span>
+                    <input id="viewportHeight" type="number" min="320" max="2160" value="900" aria-label="Screen height">
+                  </div>
+                </div>
+                <div>
+                  <label for="locale">Browser language<span class="hint" tabindex="0" role="button" aria-label="What is browser language?" data-hint="setLocale">i</span></label>
+                  <input id="locale" aria-label="Browser language" type="text" placeholder="Default (e.g. hy-AM)" spellcheck="false" autocomplete="off">
+                </div>
+                <div>
+                  <label aria-hidden="true">&nbsp;</label>
+                  <label class="check-row" for="screenshots"><input id="screenshots" type="checkbox" checked> Screenshot failed visits</label>
+                </div>
+              </div>
+            </div>
+            <div class="adv-actions"><button type="button" class="btn-link" id="resetSettings">Reset to defaults</button></div>
+          </div>
+        </details>
+        <div id="formSummary" class="summary-line"></div>
+        <div id="formError" class="error" hidden></div>
+      </form>
+    </section>
+
+    <section id="progressCard" class="card" hidden>
+      <h2 id="progressTitle">Running…</h2>
+      <div id="progressList" class="progress-list"></div>
+    </section>
+
+    <section id="results" hidden>
+      <div id="verdict" class="verdict" hidden></div>
+      <div id="sites" class="sites"></div>
+      <div class="card" style="margin-top:20px">
+        <h2 id="tableTitle">Timings</h2>
+        <div class="table-wrap"><table id="compareTable"></table></div>
+        <div id="legend" class="legend"></div>
+      </div>
+    </section>
+
+    <section id="emptyState" class="card empty">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+      <p>Enter a URL and press <b>Run</b>. Add a second URL to compare them with the same number of visits.</p>
+    </section>
+
+    <details id="logBox" hidden>
+      <summary>k6 output</summary>
+      <pre id="log"></pre>
+    </details>
+  </div>
+</main>
+
+<div id="tip" role="tooltip" hidden></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const SETTING_FIELDS = ['timeoutSec', 'timeLimitSec', 'expectStatus', 'budgetP95Ms', 'screen', 'viewportWidth', 'viewportHeight', 'locale', 'screenshots'];
+const SETTING_DEFAULTS = { timeoutSec: '', timeLimitSec: '', expectStatus: '', budgetP95Ms: '', screen: '1440x900', viewportWidth: '1440', viewportHeight: '900', locale: '', screenshots: true };
+const fields = ['url', 'compareUrl', 'vus', 'iterations', 'waitUntil', 'apiOnly', 'method', 'headers', 'body', ...SETTING_FIELDS, 'resetSettings'];
+// Headers and body may hold tokens, so they are never saved in the browser.
+const SAVED_FIELDS = ['url', 'compareUrl', 'vus', 'iterations', 'waitUntil', 'apiOnly', 'method', ...SETTING_FIELDS];
+const LIMITS = { browser: { vus: 20, iterations: 1000 }, api: { vus: 200, iterations: 10000 } };
+const STORE_KEY = 'pageLoadCompare.form';
+let polling = null;
+
+// ---------- formatting ----------
+const fmtMs = (v) => v == null ? '—' : (v >= 10000 ? (v / 1000).toFixed(1) + ' s' : Math.round(v) + ' ms');
+const fmtSec = (v) => v == null ? '—' : (v / 1000).toFixed(2) + ' s';
+const fmtSize = (v) => v == null ? '—' : v >= 1048576 ? (v / 1048576).toFixed(1) + ' MB' : Math.round(v / 1024) + ' KB';
+const fmtDur = (ms) => {
+  if (ms == null) return '—';
+  const s = Math.round(ms / 1000), m = Math.floor(s / 60);
+  return m ? `${m}m ${s % 60}s` : `${s}s`;
+};
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const hostOf = (u) => { try { return new URL(u).host; } catch { return u; } };
+
+// B compared with A. Lower is better for every metric shown.
+function diff(a, b) {
+  if (a == null || b == null || a === 0) return { cls: 'same', text: '—' };
+  if (a === b) return { cls: 'same', text: 'the same' };
+  const ratio = b / a;
+  // Always show the real difference; a tiny one still shows as at least 1%.
+  const pct = (x) => `${Math.max(1, Math.round(x * 100))}%`;
+  if (ratio > 1) return { cls: 'slower', text: ratio >= 2 ? `${ratio.toFixed(1)}× slower` : `${pct(ratio - 1)} slower` };
+  const inv = a / b;
+  return { cls: 'faster', text: Number.isFinite(inv) && inv >= 2 ? `${inv.toFixed(1)}× faster` : `${pct(1 - ratio)} faster` };
+}
+
+// ---------- form ----------
+function readForm() {
+  return {
+    url: $('url').value.trim(),
+    compareUrl: $('compareUrl').value.trim(),
+    vus: Number($('vus').value),
+    iterations: Number($('iterations').value),
+    waitUntil: $('waitUntil').value,
+    apiOnly: $('apiOnly').checked,
+    method: $('method').value,
+    headers: $('headers').value,
+    body: $('body').value,
+    settings: readSettings(),
+  };
+}
+
+// Advanced settings. Empty number fields mean "use the default".
+function readSettings() {
+  const num = (id) => ($(id).value.trim() === '' ? null : Number($(id).value));
+  const screen = $('screen').value;
+  const [w, h] = screen === 'custom'
+    ? [num('viewportWidth'), num('viewportHeight')]
+    : screen.split('x').map(Number);
+  return {
+    timeoutSec: num('timeoutSec'),
+    timeLimitSec: num('timeLimitSec'),
+    expectStatus: $('expectStatus').value.trim(),
+    budgetP95Ms: num('budgetP95Ms'),
+    viewportWidth: w,
+    viewportHeight: h,
+    locale: $('locale').value.trim(),
+    screenshots: $('screenshots').checked,
+  };
+}
+
+function fieldValue(id) {
+  return $(id).type === 'checkbox' ? $(id).checked : $(id).value;
+}
+
+function setField(id, value) {
+  if ($(id).type === 'checkbox') $(id).checked = value === true;
+  else $(id).value = value;
+}
+
+function changedSettings() {
+  return SETTING_FIELDS.filter((k) => !(k === 'viewportWidth' || k === 'viewportHeight') || $('screen').value === 'custom')
+    .filter((k) => String(fieldValue(k)) !== String(SETTING_DEFAULTS[k]));
+}
+
+// Show the fields that belong to the chosen mode.
+function applyMode() {
+  const api = $('apiOnly').checked;
+  const limits = LIMITS[api ? 'api' : 'browser'];
+  $('apiFields').hidden = !api;
+  $('waitUntilField').hidden = api;
+  $('iterationsLabel').textContent = api ? 'Total requests per URL' : 'Total visits per URL';
+  $('vus').max = limits.vus;
+  $('iterations').max = limits.iterations;
+  $('browserSettings').hidden = api;
+  $('expectStatus').placeholder = api ? '2xx' : '200';
+  $('timeoutLabel').textContent = api ? 'Timeout per request (s)' : 'Timeout per visit (s)';
+  $('customSize').hidden = $('screen').value !== 'custom';
+  const n = changedSettings().length;
+  $('advChanged').textContent = n ? `· ${n} changed` : '';
+}
+
+function updateSummary() {
+  applyMode();
+  const f = readForm();
+  const n = f.compareUrl ? 2 : 1;
+  const vus = f.vus || 0;
+  $('formSummary').innerHTML = f.vus && f.iterations
+    ? `${f.apiOnly ? `API test (${esc(f.method)}, no browser): each` : 'Each'} URL gets <b>${f.iterations}</b> ${f.apiOnly ? 'requests' : 'visits'} shared by <b>${vus}</b> parallel ${vus === 1 ? 'user' : 'users'}` +
+      (n === 2 ? ' — URLs run one after the other, so they don’t slow each other down.' : '.') +
+      settingsSummary(f)
+    : '';
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(SAVED_FIELDS.map((k) => [k, fieldValue(k)]))));
+  } catch {}
+}
+
+function settingsSummary(f) {
+  const st = f.settings, parts = [];
+  if (st.timeoutSec != null) parts.push(`timeout ${st.timeoutSec} s`);
+  if (st.timeLimitSec) parts.push(`limit ${st.timeLimitSec} s`);
+  if (st.expectStatus) parts.push(`status ${esc(st.expectStatus)}`);
+  if (st.budgetP95Ms) parts.push(`budget p95 ≤ ${st.budgetP95Ms} ms`);
+  if (!f.apiOnly) {
+    if (st.viewportWidth !== 1440 || st.viewportHeight !== 900) parts.push(`screen ${st.viewportWidth}×${st.viewportHeight}`);
+    if (st.locale) parts.push(`language ${esc(st.locale)}`);
+    if (!st.screenshots) parts.push('no screenshots');
+  }
+  return parts.length ? ` Settings: ${parts.join(', ')}.` : '';
+}
+
+$('resetSettings').addEventListener('click', () => {
+  SETTING_FIELDS.forEach((k) => setField(k, SETTING_DEFAULTS[k]));
+  updateSummary();
+});
+$('runForm').addEventListener('change', updateSummary);
+
+function restoreForm() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+    if (saved) SAVED_FIELDS.forEach((k) => {
+      if (saved[k] == null) return;
+      if (saved[k] === '' && $(k).type !== 'checkbox' && !(k in SETTING_DEFAULTS)) return;
+      setField(k, saved[k]);
+    });
+  } catch {}
+  if (!$('url').value) $('url').value = 'https://hartak.am/';
+  updateSummary();
+}
+
+function validate(f) {
+  const urlOk = (u) => /^https?:\/\/[^\s/]+/i.test(u);
+  if (!f.url) return 'Enter a URL.';
+  if (!urlOk(f.url)) return 'URL must start with http:// or https://';
+  if (f.compareUrl && !urlOk(f.compareUrl)) return 'Compare URL must start with http:// or https://';
+  const lim = LIMITS[f.apiOnly ? 'api' : 'browser'];
+  const noun = f.apiOnly ? 'requests' : 'visits';
+  if (!Number.isInteger(f.vus) || f.vus < 1 || f.vus > lim.vus) return `Parallel users must be 1–${lim.vus}${f.apiOnly ? '' : '. Each user runs a real Chrome, so keep it low on a laptop'}.`;
+  if (!Number.isInteger(f.iterations) || f.iterations < 1 || f.iterations > lim.iterations) return `Total ${noun} must be 1–${lim.iterations}.`;
+  if (f.vus > f.iterations) return `Parallel users (${f.vus}) can’t be more than total ${noun} (${f.iterations}): each user needs at least one.`;
+  const st = f.settings;
+  const inRange = (v, lo, hi) => v == null || (Number.isInteger(v) && v >= lo && v <= hi);
+  if (!inRange(st.timeoutSec, 1, 300)) return 'Timeout must be 1–300 seconds (empty = 30).';
+  if (!inRange(st.timeLimitSec, 0, 7200) || (st.timeLimitSec && st.timeLimitSec < 10)) return 'Time limit must be empty (automatic) or 10–7200 seconds.';
+  if (st.expectStatus && !/^\s*[1-5](\d\d|xx)(\s*,\s*[1-5](\d\d|xx))*\s*$/i.test(st.expectStatus)) return 'Expected status must look like 200, 2xx or 200,301.';
+  if (!inRange(st.budgetP95Ms, 0, 600000)) return 'Budget must be empty (off) or 1–600000 ms.';
+  if (!f.apiOnly) {
+    if (!inRange(st.viewportWidth, 320, 3840) || !inRange(st.viewportHeight, 320, 2160)) return 'Screen size must be 320–3840 × 320–2160 pixels.';
+    if (st.locale && !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(st.locale)) return 'Browser language must look like hy-AM or en-US.';
+  }
+  if (f.apiOnly) {
+    const bad = f.headers.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('{') && !l.includes(':'));
+    if (bad) return `Header line “${bad}” needs the form Name: value.`;
+  }
+  return null;
+}
+
+function showError(msg) {
+  $('formError').textContent = msg || '';
+  $('formError').hidden = !msg;
+}
+
+function setRunning(running) {
+  fields.forEach((k) => { $(k).disabled = running; });
+  $('runBtn').disabled = running;
+  $('runBtn').textContent = running ? 'Running…' : 'Run';
+  $('stopBtn').hidden = !running;
+}
+
+$('runForm').addEventListener('input', updateSummary);
+$('runForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const f = readForm();
+  const problem = validate(f);
+  showError(problem);
+  if (problem) return;
+  try {
+    const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(f) });
+    const data = await res.json();
+    if (!res.ok) return showError(data.error || 'Could not start the run.');
+    $('results').hidden = true;
+    startPolling();
+  } catch (e) {
+    showError('Cannot reach the app server. Is app.py still running?');
+  }
+});
+
+$('stopBtn').addEventListener('click', async () => {
+  $('stopBtn').disabled = true;
+  try { await fetch('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch {}
+  $('stopBtn').disabled = false;
+});
+
+// ---------- status ----------
+function startPolling() {
+  clearInterval(polling);
+  poll();
+  polling = setInterval(poll, 1000);
+}
+
+async function poll() {
+  let data;
+  try { data = await (await fetch('/api/status', { cache: 'no-store' })).json(); }
+  catch { return; }
+
+  $('k6Badge').className = 'badge ' + (data.k6 ? 'ok' : 'bad');
+  $('k6Badge').textContent = data.k6 ? 'k6 ready' : 'k6 not found';
+
+  const job = data.job;
+  if (!job) { setRunning(false); clearInterval(polling); return; }
+
+  const running = job.state === 'running';
+  setRunning(running);
+  if (!running) clearInterval(polling);
+  if (job.state === 'error') showError(job.message);
+
+  $('emptyState').hidden = true;
+  renderProgress(job);
+  renderLog(job);
+  if (job.targets.some((t) => t.stats)) renderResults(job);
+  else if (job.state !== 'running') $('results').hidden = true;
+}
+
+function renderProgress(job) {
+  const running = job.state === 'running';
+  $('progressCard').hidden = false;
+  $('progressTitle').textContent = running
+    ? `Running · ${fmtDur(job.elapsedMs)}`
+    : job.state === 'stopped' ? `Stopped after ${fmtDur(job.elapsedMs)}`
+    : job.state === 'problem' ? `Finished with problems · ${fmtDur(job.elapsedMs)}`
+    : job.targets.some((t) => t.budget && !t.budget.passed) ? `Finished · over budget · ${fmtDur(job.elapsedMs)}`
+    : `Finished in ${fmtDur(job.elapsedMs)}`;
+  $('progressList').innerHTML = job.targets.map((t, i) => {
+    const pct = Math.min(100, (t.done / t.total) * 100);
+    const noun = job.mode === 'api' ? 'requests' : 'visits';
+    const label = {
+      running: `${t.done} / ${t.total} ${noun}`, waiting: 'waiting', done: `${t.done} / ${t.total} ${noun} · done`,
+      stopped: `stopped at ${t.done} / ${t.total}`, error: 'error',
+      failed: `⚠ failed · ${t.done} / ${t.total} ${noun}`, incomplete: `⚠ incomplete · ${t.done} / ${t.total} ${noun}`,
+    }[t.phase] || t.phase;
+    const bad = t.phase === 'failed' || t.phase === 'incomplete';
+    return `<div>
+      <div class="progress-head"><span class="url"><span class="dot ${i ? 'b' : 'a'}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;background:var(--${i ? 'b' : 'a'})"></span>${esc(t.url)}</span><span class="count ${bad ? 'bad' : ''}">${label}</span></div>
+      <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="${t.total}" aria-valuenow="${t.done}"><div class="fill ${i ? 'b' : 'a'} ${t.phase === 'running' ? 'running' : ''}" style="width:${pct}%"></div></div>
+      ${t.problem ? `<div class="problem">${esc(t.problem)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function renderLog(job) {
+  $('logBox').hidden = job.log.length === 0;
+  $('log').textContent = job.log.join('\n');
+}
+
+function siteCard(t, i, job) {
+  const api = job.mode === 'api';
+  const mainKey = job.mainMetric || 'fullyLoadedMs';
+  const mainLabel = job.mainLabel || 'Fully loaded';
+  const mainHint = TIMING_HINT[mainKey];
+  if (!t.stats) {
+    if (!t.problem) return '';
+    return `<div class="card site failed">
+      <div class="site-head"><span class="name">${esc(hostOf(t.url))}</span></div>
+      <div class="problem" style="margin-top:0">${esc(t.problem)}</div>
+      <p class="hint-text" style="font-size:12.5px;color:var(--muted);margin:10px 0 0">No results to compare. Open “k6 output” below for details.</p>
+    </div>`;
+  }
+  const s = t.stats;
+  const full = s.timings[mainKey];
+  const ok = s.failed === 0 && s.visits === t.total;
+  return `<div class="card site ${i ? 'b' : ''}">
+    <div class="site-head">
+      <span class="name">${esc(hostOf(t.url))}</span>
+      ${s.report ? `<a href="${esc(s.report)}" target="_blank" rel="noopener">Full report ↗</a>` : ''}
+    </div>
+    <div class="kpis">
+      <div class="kpi"><div class="k">${mainLabel} · median${hint(mainHint)}</div><div class="v">${api ? fmtMs(full.med) : fmtSec(full.med)}</div></div>
+      <div class="kpi"><div class="k">${mainLabel} · p95${hint('p95')}</div><div class="v">${api ? fmtMs(full.p95) : fmtSec(full.p95)}</div></div>
+      <div class="kpi"><div class="k">${api ? 'Requests' : 'Visits'} passed${hint('passed')}</div><div class="v ${ok ? 'good' : 'bad'}">${s.passed} / ${t.total}</div></div>
+      <div class="kpi"><div class="k">Server response · median${hint('ttfb')}</div><div class="v">${fmtMs(s.timings.ttfbMs.med)}</div></div>
+      <div class="kpi"><div class="k">Run time${hint('runtime')}</div><div class="v">${fmtDur(s.runtimeMs)}</div></div>
+      <div class="kpi"><div class="k">${api ? 'Response size' : 'Transferred'} · median${hint(api ? 'size' : 'transfer')}</div><div class="v">${fmtSize(s.transferMed)}</div></div>
+    </div>
+    ${t.budget ? `<div class="budget ${t.budget.passed ? 'ok' : 'bad'}">${t.budget.passed ? '✓' : '✗'} Budget: ${esc(mainLabel.toLowerCase())} p95 ${fmtMs(t.budget.p95Ms)} ${t.budget.passed ? '≤' : '>'} ${fmtMs(t.budget.limitMs)}</div>` : ''}
+    ${t.problem ? `<div class="problem">${esc(t.problem)}</div>` : ''}
+    ${s.errors.length ? `<ul class="errors">${s.errors.map((e) => `<li>${api ? 'Request' : 'Visit'} ${e.visit}: ${esc(e.error)}</li>`).join('')}</ul>` : ''}
+  </div>`;
+}
+
+const DESCRIPTIONS = {
+  ttfbMs: 'server response', fcpMs: 'first content', lcpMs: 'main content',
+  domMs: 'HTML parsed', loadMs: 'load event', fullyLoadedMs: 'all requests done',
+  connectMs: 'TCP connection', tlsMs: 'https handshake', receiveMs: 'download answer', totalMs: 'whole request',
+};
+
+// One sentence with what actually happened, e.g.
+// "dev.hartak.am was slower than hartak.am on all 6 timings (median)."
+function resultSummary(A, B, order) {
+  const aHost = `<b>${esc(hostOf(A.url))}</b>`, bHost = `<b>${esc(hostOf(B.url))}</b>`;
+  const counts = { slower: 0, faster: 0, same: 0 };
+  let compared = 0;
+  for (const k of order) {
+    const d = diff(A.stats.timings[k].med, B.stats.timings[k].med);
+    if (d.text === '—') continue;
+    counts[d.cls] += 1;
+    compared += 1;
+  }
+  if (!compared) return '<span>Not enough data to compare the timings.</span>';
+
+  const of = compared === order.length ? `all ${compared}` : `all ${compared} measured`;
+  if (counts.slower === compared) return `<span>Result: ${bHost} was <span class="diff slower">slower</span> than ${aHost} on ${of} timings (median).</span>`;
+  if (counts.faster === compared) return `<span>Result: ${bHost} was <span class="diff faster">faster</span> than ${aHost} on ${of} timings (median).</span>`;
+
+  const parts = [];
+  if (counts.slower) parts.push(`<span class="diff slower">slower</span> on ${counts.slower}`);
+  if (counts.faster) parts.push(`<span class="diff faster">faster</span> on ${counts.faster}`);
+  if (counts.same) parts.push(`<span class="diff same">the same</span> on ${counts.same}`);
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+  return `<span>Result: compared with ${aHost}, ${bHost} was ${list} of ${compared} timings (median).</span>`;
+}
+
+let lastResultsKey = '';
+
+function renderResults(job) {
+  const key = JSON.stringify(job.targets.map((t) => [t.stats, t.problem]));
+  if (key === lastResultsKey) return;
+  lastResultsKey = key;
+  hideTip();
+  const done = job.targets.filter((t) => t.stats);
+  $('results').hidden = false;
+  $('sites').innerHTML = job.targets.map((t, i) => siteCard(t, i, job)).join('');
+
+  const [A, B] = job.targets;
+  const compare = A.stats && B && B.stats;
+  const order = (job.timings || []).map(([field]) => field);
+  const mainKey = job.mainMetric || 'fullyLoadedMs';
+  const api = job.mode === 'api';
+
+  if (compare) {
+    const a = A.stats.timings[mainKey].med, b = B.stats.timings[mainKey].med;
+    const d = diff(a, b);
+    $('verdict').hidden = false;
+    $('verdict').innerHTML = `<div class="big">${d.text === 'the same' ? '=' : d.text.split(' ')[0]}</div>
+      <div class="text"><b>${esc(hostOf(B.url))}</b> is ${d.text === '—' ? 'not comparable with' : d.text === 'the same' ? '<b>as fast as</b>' : `<b>${esc(d.text)}</b> than`} <b>${esc(hostOf(A.url))}</b>
+      ${api ? 'to respond' : 'to fully load'} (median ${fmtMs(b)} vs ${fmtMs(a)}), with ${job.iterations} ${api ? 'requests' : 'visits'} each by ${job.vus} parallel users${api ? `, ${esc(job.method)} without a browser` : ''}.</div>`;
+
+    $('tableTitle').textContent = `${hostOf(B.url)} compared with ${hostOf(A.url)} · lower times are better`;
+    $('compareTable').innerHTML = `<thead><tr>
+        <th>Timing</th>
+        <th class="a">${esc(hostOf(A.url))} · median${hint('median')}</th><th class="b">${esc(hostOf(B.url))} · median${hint('median')}</th><th class="b">${esc(hostOf(B.url))} is…${hint('compare')}</th>
+        <th class="a">p95${hint('p95')}</th><th class="b">p95${hint('p95')}</th><th class="b">${esc(hostOf(B.url))} is…${hint('compare')}</th>
+      </tr></thead><tbody>` +
+      order.map((k) => {
+        const x = A.stats.timings[k], y = B.stats.timings[k];
+        const dm = diff(x.med, y.med), dp = diff(x.p95, y.p95);
+        return `<tr class="${k === mainKey ? 'main' : ''}">
+          <td>${x.label}${hint(TIMING_HINT[k])}<span class="desc">${DESCRIPTIONS[k]}</span></td>
+          <td>${fmtMs(x.med)}</td><td>${fmtMs(y.med)}</td><td><span class="diff ${dm.cls}">${dm.text}</span></td>
+          <td>${fmtMs(x.p95)}</td><td>${fmtMs(y.p95)}</td><td><span class="diff ${dp.cls}">${dp.text}</span></td>
+        </tr>`;
+      }).join('') +
+      (() => {
+        const r = diff(A.stats.runtimeMs, B.stats.runtimeMs);
+        const tr = diff(A.stats.transferMed, B.stats.transferMed);
+        return `<tr><td>Run time${hint('runtime')}<span class="desc">all ${job.iterations} ${api ? 'requests' : 'visits'}</span></td>
+            <td>${fmtDur(A.stats.runtimeMs)}</td><td>${fmtDur(B.stats.runtimeMs)}</td><td><span class="diff ${r.cls}">${r.text}</span></td><td></td><td></td><td></td></tr>
+          <tr><td>${api ? 'Response size' : 'Transferred'}${hint(api ? 'size' : 'transfer')}<span class="desc">median per ${api ? 'request' : 'visit'}</span></td>
+            <td>${fmtSize(A.stats.transferMed)}</td><td>${fmtSize(B.stats.transferMed)}</td><td><span class="diff ${tr.cls}">${tr.text.replace('slower', 'larger').replace('faster', 'smaller')}</span></td><td></td><td></td><td></td></tr>`;
+      })() + '</tbody>';
+    $('legend').innerHTML = resultSummary(A, B, order);
+  } else {
+    const t = done[0];
+    $('verdict').hidden = true;
+    $('tableTitle').textContent = `Timings · ${hostOf(t.url)}`;
+    $('compareTable').innerHTML = `<thead><tr><th>Timing</th><th>Median${hint('median')}</th><th>p90${hint('p90')}</th><th>p95${hint('p95')}</th><th>Average${hint('avg')}</th><th>Min${hint('min')}</th><th>Max${hint('max')}</th></tr></thead><tbody>` +
+      order.map((k) => {
+        const x = t.stats.timings[k];
+        return `<tr class="${k === mainKey ? 'main' : ''}"><td>${x.label}${hint(TIMING_HINT[k])}<span class="desc">${DESCRIPTIONS[k]}</span></td>
+          <td>${fmtMs(x.med)}</td><td>${fmtMs(x.p90)}</td><td>${fmtMs(x.p95)}</td><td>${fmtMs(x.avg)}</td><td>${fmtMs(x.min)}</td><td>${fmtMs(x.max)}</td></tr>`;
+      }).join('') + '</tbody>';
+    $('legend').innerHTML = '';
+  }
+}
+
+// ---------- hints ----------
+const HINTS = {
+  ttfb: ['TTFB · Time to First Byte',
+    'How long the server takes to start sending the page after the browser asks for it. Mostly server speed and network distance, before anything can appear on screen.',
+    'Good: under 800 ms'],
+  fcp: ['FCP · First Contentful Paint',
+    'When the first text or image appears on screen. Until then the visitor sees a blank page.',
+    'Good: under 1.8 s'],
+  lcp: ['LCP · Largest Contentful Paint',
+    'When the biggest visible element (main heading, banner or image) is shown. The best single signal that the page looks ready to the visitor.',
+    'Good: under 2.5 s'],
+  dom: ['DOM loaded · DOMContentLoaded',
+    'The HTML is fully read and the page structure is built. Images, fonts and some styles may still be loading.',
+    null],
+  load: ['Load · load event',
+    'The browser finished downloading everything the page asked for at the start: scripts, CSS, images and fonts. The spinner in the browser tab stops here.',
+    null],
+  full: ['Fully loaded',
+    'The later of the load event and the last network request finishing, so it also counts data the page loads after the load event. The main number in this tool.',
+    null],
+  runtime: ['Run time',
+    'Total wall-clock time to finish all visits for this URL with the chosen number of parallel users. A slower site takes longer for the same number of visits.',
+    null],
+  transfer: ['Transferred',
+    'Data downloaded in one visit (median). Files from other domains may count as 0 if their server hides the size, so the real total can be higher.',
+    null],
+  median: ['Median',
+    'The middle value: half of the visits were faster, half were slower. Shows what a typical visitor gets.',
+    null],
+  p90: ['p90 · 90th percentile',
+    '90% of visits were faster than this, and the slowest 10% were slower. With 30 visits, that is the 3 slowest.',
+    null],
+  p95: ['p95 · 95th percentile',
+    '95% of visits were faster than this; only the slowest 5% were slower. Shows what unlucky visitors experience. Performance targets usually use p95.',
+    null],
+  avg: ['Average',
+    'Sum of all visit times divided by the number of visits. One very slow visit can pull it up, so the median is usually more reliable.',
+    null],
+  connect: ['Connect',
+    'Time to open the network connection to the server. Each user keeps its connection open, so this is usually 0 after its first request.',
+    null],
+  tls: ['TLS',
+    'Time for the https security handshake. Like Connect, usually only on a user\u2019s first request.',
+    null],
+  receive: ['Receive',
+    'Time to download the answer after the first byte arrived. Grows with response size and network speed.',
+    null],
+  total: ['Total',
+    'The whole request from start to finish: waiting for a connection, connect, TLS, sending, waiting for the server (TTFB) and downloading. The main number in API mode.',
+    null],
+  size: ['Response size',
+    'Size of the answer (median), from the Content-Length header or the received body.',
+    null],
+  setTimeout: ['Timeout',
+    'How long one visit (browser) or request (API) may take before it counts as failed. Empty = 30 seconds.',
+    null],
+  setLimit: ['Time limit per URL',
+    'Maximum time for all visits to one URL. Visits still running then are stopped and reported as hung. Empty = automatic, based on users, visits and timeout.',
+    null],
+  setStatus: ['Expected HTTP status',
+    'Which answers count as success: an exact code (200), a class (2xx = any 200–299) or a list (200,301). Empty = 200 in browser mode, 2xx in API mode.',
+    null],
+  setBudget: ['Performance budget',
+    'Optional goal for the main number (fully loaded, or total in API mode): if its p95 is above this many milliseconds, the URL is marked as over budget and the run is not OK. Empty = no budget.',
+    null],
+  setScreen: ['Screen size',
+    'Browser window size used for every visit. Pages can load different images and layouts on mobile and desktop, so timings may differ.',
+    null],
+  setLocale: ['Browser language',
+    'Language the browser reports to the site (Accept-Language), e.g. hy-AM for Armenian or en-US for English. Empty = Chrome default.',
+    null],
+  min: ['Min', 'The fastest visit in this run.', null],
+  max: ['Max', 'The slowest visit in this run. Often random noise, so look at p95 for a steadier "slow" number.', null],
+  passed: ['Visits passed',
+    'Visits where the page answered with HTTP 200 and the browser confirmed it finished loading, out of all visits you asked for. Visits that failed or hung count as not passed.',
+    null],
+  compare: ['Comparison badge',
+    'How the second URL did against the first for that row: “2.0× slower” means it took twice as long.',
+    null],
+};
+const TIMING_HINT = {
+  ttfbMs: 'ttfb', fcpMs: 'fcp', lcpMs: 'lcp', domMs: 'dom', loadMs: 'load', fullyLoadedMs: 'full',
+  connectMs: 'connect', tlsMs: 'tls', receiveMs: 'receive', totalMs: 'total',
+};
+
+function hint(key) {
+  const h = HINTS[key];
+  if (!h) return '';
+  return `<span class="hint" tabindex="0" role="button" aria-label="What is ${esc(h[0])}?" data-hint="${key}">i</span>`;
+}
+
+let tipAnchor = null;
+
+function showTip(el) {
+  const h = HINTS[el.dataset.hint];
+  if (!h) return;
+  const tip = $('tip');
+  tip.innerHTML = `<b>${esc(h[0])}</b>${esc(h[1])}${h[2] ? `<span class="good-value">${esc(h[2])}</span>` : ''}`;
+  tip.hidden = false;
+  if (tipAnchor && tipAnchor !== el) tipAnchor.setAttribute('aria-expanded', 'false');
+  tipAnchor = el;
+  el.setAttribute('aria-expanded', 'true');
+
+  // Place below the icon, or above if there is no room; keep inside the window.
+  const r = el.getBoundingClientRect();
+  const t = tip.getBoundingClientRect();
+  const gap = 8, edge = 12;
+  let left = r.left + r.width / 2 - t.width / 2;
+  left = Math.max(edge, Math.min(left, window.innerWidth - t.width - edge));
+  let top = r.bottom + gap;
+  if (top + t.height > window.innerHeight - edge) top = r.top - t.height - gap;
+  tip.style.left = `${left}px`;
+  tip.style.top = `${Math.max(edge, top)}px`;
+}
+
+function hideTip() {
+  $('tip').hidden = true;
+  if (tipAnchor) tipAnchor.setAttribute('aria-expanded', 'false');
+  tipAnchor = null;
+}
+
+document.addEventListener('mouseover', (e) => { const el = e.target.closest('.hint'); if (el) showTip(el); });
+document.addEventListener('mouseout', (e) => { if (e.target.closest('.hint') && !e.target.closest('.hint').contains(e.relatedTarget)) hideTip(); });
+document.addEventListener('focusin', (e) => { const el = e.target.closest('.hint'); if (el) showTip(el); });
+document.addEventListener('focusout', (e) => { if (e.target.closest('.hint')) hideTip(); });
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('.hint');
+  // Tap on touch screens opens the hint; tapping anywhere else closes it.
+  if (el) showTip(el);
+  else hideTip();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideTip();
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('.hint')) { e.preventDefault(); showTip(e.target); }
+});
+window.addEventListener('scroll', hideTip, { passive: true, capture: true });
+window.addEventListener('resize', hideTip);
+
+restoreForm();
+startPolling();
+</script>
+</body>
+</html>

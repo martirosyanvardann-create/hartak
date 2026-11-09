@@ -1,0 +1,14 @@
+# Test output
+reports/
+screenshots/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

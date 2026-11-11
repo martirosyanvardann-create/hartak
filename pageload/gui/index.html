@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page Load Compare</title>
+<link rel="stylesheet" href="/gui/app.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="8" fill="#1e3a8a"/>
+        <path d="M7 22a9 9 0 0 1 18 0" fill="none" stroke="#93b4f5" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M16 22l5-7" stroke="#fbbf24" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="16" cy="22" r="2" fill="#fff"/>
+      </svg>
+      <div>
+        <h1>Page Load Compare</h1>
+        <p>Real-browser load timing with k6</p>
+      </div>
+    </div>
+    <span id="k6Badge" class="badge">Checking k6…</span>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <section class="card">
+      <h2>New run</h2>
+      <form id="runForm" novalidate>
+        <div class="urls">
+          <div>
+            <label for="url"><span class="dot a"></span>URL</label>
+            <input id="url" name="url" type="url" placeholder="https://hartak.am/" required>
+          </div>
+          <div>
+            <label for="compareUrl"><span class="dot b"></span>Compare with URL <span class="opt">(optional)</span></label>
+            <input id="compareUrl" name="compareUrl" type="url" placeholder="https://dev.hartak.am/">
+          </div>
+        </div>
+        <label class="mode-switch" for="apiOnly">
+          <input id="apiOnly" name="apiOnly" type="checkbox" aria-label="API only: plain HTTP requests, no browser">
+          <span><b>API only</b> — send plain HTTP requests, no browser. Measures how fast the server answers
+            (connect, TLS, TTFB, download), not how the page renders. Lighter, so it can run many more users.</span>
+        </label>
+        <div id="apiFields" class="api-fields" hidden>
+          <div>
+            <label for="method">Method</label>
+            <select id="method" name="method">
+              <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option>
+              <option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
+            </select>
+          </div>
+          <div>
+            <label for="headers">Headers <span class="opt">(optional, one per line: Name: value)</span></label>
+            <textarea id="headers" name="headers" rows="2" placeholder="Accept: application/json" spellcheck="false"></textarea>
+          </div>
+          <div>
+            <label for="body">Body <span class="opt">(optional)</span></label>
+            <textarea id="body" name="body" rows="2" placeholder='{"query": "test"}' spellcheck="false"></textarea>
+          </div>
+        </div>
+        <div class="nums">
+          <div>
+            <label for="vus">Parallel users (VUs)</label>
+            <input id="vus" name="vus" type="number" min="1" max="20" value="5" required>
+          </div>
+          <div>
+            <label for="iterations" id="iterationsLabel">Total visits per URL</label>
+            <input id="iterations" name="iterations" type="number" min="1" max="1000" value="30" required>
+          </div>
+          <div id="waitUntilField">
+            <label for="waitUntil">Page counts as loaded at</label>
+            <select id="waitUntil" name="waitUntil">
+              <option value="load">Load event</option>
+              <option value="networkidle">Network idle (+500ms)</option>
+            </select>
+          </div>
+          <div class="actions">
+            <button id="runBtn" class="btn-run" type="submit">Run</button>
+            <button id="stopBtn" class="btn-stop" type="button" hidden>Stop</button>
+          </div>
+        </div>
+        <details class="advanced" id="advanced">
+          <summary>Advanced settings <span class="changed" id="advChanged"></span></summary>
+          <div class="adv-body">
+            <div class="adv-group">
+              <h3>Run</h3>
+              <div class="adv-grid">
+                <div>
+                  <label for="timeoutSec"><span id="timeoutLabel">Timeout per visit (s)</span><span class="hint" tabindex="0" role="button" aria-label="What is timeout?" data-hint="setTimeout">i</span></label>
+                  <input id="timeoutSec" aria-label="Timeout in seconds" type="number" min="1" max="300" placeholder="30">
+                </div>
+                <div>
+                  <label for="timeLimitSec">Time limit per URL (s)<span class="hint" tabindex="0" role="button" aria-label="What is time limit?" data-hint="setLimit">i</span></label>
+                  <input id="timeLimitSec" aria-label="Time limit per URL in seconds" type="number" min="0" max="7200" placeholder="Auto">
+                </div>
+                <div>
+                  <label for="expectStatus">Expected HTTP status<span class="hint" tabindex="0" role="button" aria-label="What is expected status?" data-hint="setStatus">i</span></label>
+                  <input id="expectStatus" aria-label="Expected HTTP status" type="text" placeholder="200" spellcheck="false" autocomplete="off">
+                </div>
+                <div>
+                  <label for="budgetP95Ms">Budget: p95 at most (ms)<span class="hint" tabindex="0" role="button" aria-label="What is budget?" data-hint="setBudget">i</span></label>
+                  <input id="budgetP95Ms" aria-label="Budget: p95 at most, in milliseconds" type="number" min="0" max="600000" placeholder="Off">
+                </div>
+              </div>
+            </div>
+            <div class="adv-group" id="browserSettings">
+              <h3>Browser</h3>
+              <div class="adv-grid">
+                <div>
+                  <label for="screen">Screen size<span class="hint" tabindex="0" role="button" aria-label="What is screen size?" data-hint="setScreen">i</span></label>
+                  <select id="screen" aria-label="Screen size">
+                    <option value="1440x900">Desktop · 1440×900</option>
+                    <option value="1280x800">Laptop · 1280×800</option>
+                    <option value="768x1024">Tablet · 768×1024</option>
+                    <option value="390x844">Mobile · 390×844</option>
+                    <option value="custom">Custom…</option>
+                  </select>
+                </div>
+                <div id="customSize" hidden>
+                  <label for="viewportWidth">Width × height (px)</label>
+                  <div class="size-pair">
+                    <input id="viewportWidth" type="number" min="320" max="3840" value="1440" aria-label="Screen width">
+                    <span class="times">×</span>
+                    <input id="viewportHeight" type="number" min="320" max="2160" value="900" aria-label="Screen height">
+                  </div>
+                </div>
+                <div>
+                  <label for="locale">Browser language<span class="hint" tabindex="0" role="button" aria-label="What is browser language?" data-hint="setLocale">i</span></label>
+                  <input id="locale" aria-label="Browser language" type="text" placeholder="Default (e.g. hy-AM)" spellcheck="false" autocomplete="off">
+                </div>
+                <div>
+                  <label aria-hidden="true">&nbsp;</label>
+                  <label class="check-row" for="screenshots"><input id="screenshots" type="checkbox" checked> Screenshot failed visits</label>
+                </div>
+              </div>
+            </div>
+            <div class="adv-actions"><button type="button" class="btn-link" id="resetSettings">Reset to defaults</button></div>
+          </div>
+        </details>
+        <div id="formSummary" class="summary-line"></div>
+        <div id="formWarning" class="warning" role="status" hidden></div>
+        <div id="formError" class="error" hidden></div>
+      </form>
+    </section>
+
+    <section id="progressCard" class="card" hidden>
+      <h2 id="progressTitle">Running…</h2>
+      <div id="runWarning" class="warning" hidden></div>
+      <div id="progressList" class="progress-list"></div>
+    </section>
+
+    <section id="results" hidden>
+      <div class="results-bar" id="resultsBar" hidden>
+        <span class="results-bar-text" id="resultsBarText">Results</span>
+        <a id="downloadAll" class="btn-download" href="#" download>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+          <span id="downloadAllLabel">Download results</span>
+        </a>
+      </div>
+      <div id="verdict" class="verdict" hidden></div>
+      <div id="sites" class="sites"></div>
+      <div class="card table-card" id="tableCard">
+        <h2 id="tableTitle">Timings</h2>
+        <div class="table-wrap"><table id="compareTable"></table></div>
+        <div id="legend" class="legend"></div>
+      </div>
+    </section>
+
+    <section id="emptyState" class="card empty">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+      <p>Enter a URL and press <b>Run</b>. Add a second URL to compare them with the same number of visits.</p>
+    </section>
+
+    <details id="logBox" hidden>
+      <summary>k6 output</summary>
+      <pre id="log"></pre>
+    </details>
+  </div>
+</main>
+
+<div id="tip" role="tooltip" hidden></div>
+
+<script src="/gui/app.js" defer></script>
+</body>
+</html>

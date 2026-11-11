@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pageload"
+description = "Compare website load and API response times with k6 (GUI, HTTP API and CLI)"
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = []          # standard library only; needs k6 (and Chrome for browser tests)
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing :: Traffic Generation",
+]
+
+[project.scripts]
+pageload = "pageload.cli:main"
+
+[tool.setuptools]
+packages = ["pageload"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pageload.__version__" }
+
+[tool.setuptools.package-data]
+pageload = ["k6/*.js", "gui/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"

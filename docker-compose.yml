@@ -1,0 +1,12 @@
+services:
+  pageload:
+    build: .
+    image: pageload:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./reports:/data/reports      # results stay on your machine
+    shm_size: "1gb"                  # Chrome crashes with Docker's default 64 MB
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # test your own local sites (Linux too)
+    restart: unless-stopped

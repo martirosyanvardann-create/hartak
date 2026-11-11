@@ -19,15 +19,15 @@
  * after redirects; also 200 or a list like 200,301) and no network error.
  *
  * Examples:
- *   k6 run -e BASE_URL=https://hartak.am/ -e VUS=20 -e ITERATIONS=200 apitest.js
+ *   k6 run -e BASE_URL=https://hartak.am/ -e VUS=20 -e ITERATIONS=200 api-test.js
  *   API_METHOD=POST API_BODY='{"q":"test"}' \
  *     API_HEADERS='{"Content-Type":"application/json"}' \
- *     k6 run -e BASE_URL=https://example.com/api/search apitest.js
+ *     k6 run -e BASE_URL=https://example.com/api/search api-test.js
  *
  * Env: BASE_URL, VUS (default 10), ITERATIONS (default 100),
  * API_METHOD (default GET), API_HEADERS (JSON object), API_BODY,
  * EXPECT_STATUS (default 2xx), TIMEOUT_MS (default 30000), MAX_DURATION (default 10m),
- * GRACEFUL_STOP (default 30s), REPORT_DIR (set by run-report.sh).
+ * GRACEFUL_STOP (default 30s), REPORT_DIR (set by the pageload tool).
  */
 
 import http from 'k6/http';

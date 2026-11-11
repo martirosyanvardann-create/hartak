@@ -26,13 +26,12 @@
  * load     — parallel users (VUS) repeating visits for DURATION;
  *            a slower site gets fewer visits
  *
- * Examples:
- *   k6 run loadtest.js
- *   k6 run -e BASE_URL=https://dev.hartak.am/ -e PROFILE=baseline loadtest.js
- *   k6 run -e WAIT_UNTIL=networkidle loadtest.js
- *
- * HTML report with one row per visit:
- *   ./run-report.sh -e PROFILE=baseline   → reports/<timestamp>/report.html
+ * Usually started by the pageload tool (GUI, API or "pageload run"), which
+ * also shares one Chrome between users and builds the HTML report.
+ * Directly with k6:
+ *   k6 run browser-test.js
+ *   k6 run -e BASE_URL=https://dev.hartak.am/ -e PROFILE=baseline browser-test.js
+ *   k6 run -e WAIT_UNTIL=networkidle browser-test.js
  *
  * Optional env: BASE_URL (default https://hartak.am/), WAIT_UNTIL, LOCALE,
  * EXPECT_STATUS (200, 2xx or 200,301; default 200), VIEWPORT_WIDTH / VIEWPORT_HEIGHT
@@ -85,7 +84,7 @@ function step(name) {
   }
 }
 
-// Set by run-report.sh. When set, the run also writes summary.json there,
+// Set by the pageload tool. When set, the run also writes summary.json there,
 // and each visit is logged as a "VISIT {json}" line for the report.
 const REPORT_DIR = __ENV.REPORT_DIR || '';
 
@@ -337,11 +336,13 @@ export default async function () {
     visit.error = `${stage}: ${error}`;
 
     if (page && SCREENSHOT_ON_FAIL) {
-      const path = `screenshots/fail-vu${__VU}-iter${__ITER}.png`;
+      // Saved inside the run folder; the report links to it relatively.
+      const name = `screenshots/fail-vu${__VU}-iter${__ITER}.png`;
+      const path = REPORT_DIR ? `${REPORT_DIR}/${name}` : name;
 
       try {
         await page.screenshot({ path, fullPage: true });
-        visit.screenshot = path;
+        visit.screenshot = name;
       } catch (screenshotError) {
         console.error(`Screenshot failed: ${screenshotError}`);
       }
@@ -441,6 +442,7 @@ export function handleSummary(data) {
 
   if (REPORT_DIR) {
     output[`${REPORT_DIR}/summary.json`] = JSON.stringify({
+      mode: 'browser',
       url: BASE_URL,
       profile: PROFILE,
       waitUntil: WAIT_UNTIL,

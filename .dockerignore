@@ -1,0 +1,10 @@
+.git
+.claude
+reports
+screenshots
+tests
+**/__pycache__
+*.pyc
+build
+*.egg-info
+.DS_Store

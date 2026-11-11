@@ -9,6 +9,7 @@ import html
 import sys
 from pathlib import Path
 
+from . import diagnosis, diagnosis_html
 from .analysis import describe, percentile
 from .formatting import duration, local_time, size
 from .modes import get_mode
@@ -64,7 +65,11 @@ def build_report(run_dir: Path) -> Path:
         f'<div class="value">{round(percentile(requests, 50)) if requests else "—"}</div></div>'
     )
 
+    diag = diagnosis.diagnose(visits, summary, mode=mode, other_lines=data.other_lines)
+    diag_section = diagnosis_html.render(diag, noun)
+
     page = _TEMPLATE.format(
+        diagnosis=diag_section,
         title="API Response Report" if api else "Page Load Report",
         result_color="var(--ok)" if all_ok else "var(--bad)",
         url=e(url), run=e(run_dir.name), started=e(started),
@@ -154,6 +159,7 @@ body {{ margin: 0; background: var(--bg); color: var(--text);
 main {{ max-width: 1280px; margin: 0 auto; padding: 32px 16px 48px; }}
 h1 {{ font-size: 22px; margin: 0 0 4px; word-break: break-all; }}
 h2 {{ font-size: 15px; margin: 32px 0 12px; }}
+h3 {{ font-size: 13.5px; margin: 20px 0 8px; }}
 .meta {{ color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 18px; }}
 .meta b {{ color: var(--text); font-weight: 600; }}
 .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 20px; }}
@@ -205,6 +211,9 @@ td.note a {{ color: var(--accent); }}
   </div>
 
   {missing_note}
+
+  <h2 id="reasons">Possible reasons</h2>
+  {diagnosis}
 
   <h2>Timings</h2>
   <div class="table-wrap">

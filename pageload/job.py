@@ -24,7 +24,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Protocol
 
-from . import analysis
+from . import analysis, diagnosis
 from .chrome import SharedChrome
 from .config import RunConfig
 from .formatting import host_of
@@ -66,6 +66,7 @@ class Target:
     run_dir: Path
     problem: str | None = None
     finished: bool = False
+    stats: dict[str, Any] | None = None    # computed once, after the URL finished
 
 
 def diagnose(recorded: int, expected: int, noun: str, result: K6Result, limit_s: int) -> str | None:
@@ -243,14 +244,18 @@ class Job:
         targets = []
         for index, target in enumerate(self.targets):
             done = self.progress(index)
-            stats = None
-            if target.finished and done > 0:
+            stats = target.stats
+            if stats is None and target.finished and done > 0:
                 data = load_run(target.run_dir)
                 stats = analysis.target_stats(data.visits, data.summary, mode)
+                stats["diagnosis"] = diagnosis.diagnose(
+                    data.visits, data.summary, mode=mode, vus=config.vus, expected=config.iterations,
+                    timeout_ms=config.settings.timeout_s * 1000, other_lines=data.other_lines)
                 report = target.run_dir / REPORT_HTML
                 stats["report"] = f"/reports/{target.run_dir.name}/{REPORT_HTML}" if report.exists() else None
                 stats["reportPath"] = str(report) if report.exists() else None
                 stats["download"] = f"/api/runs/{target.run_dir.name}/download"
+                target.stats = stats
             targets.append({
                 "url": target.url,
                 "runFolder": target.run_dir.name,

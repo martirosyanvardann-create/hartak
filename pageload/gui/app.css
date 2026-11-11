@@ -253,3 +253,20 @@ th .hint { vertical-align: -3px; }
 .btn-download:hover { background: var(--navy-600); }
 .btn-download:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .site-links { display: inline-flex; gap: 14px; flex-wrap: wrap; }
+
+/* Possible reasons */
+.diagnosis { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.diag-head { font-weight: 650; font-size: 13px; margin-bottom: 6px; }
+.diag-head.bad { color: var(--bad); }
+.diag-head a { font-weight: 500; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--bad-soft); color: var(--bad); }
+.finding { border-left: 3px solid var(--a); padding: 4px 0 4px 10px; margin: 6px 0; font-size: 13px; }
+.finding.critical { border-left-color: var(--bad); }
+.finding.warning { border-left-color: #d69e2e; }
+.finding summary { cursor: pointer; font-weight: 600; }
+.finding .lvl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; margin-right: 6px; opacity: .7; }
+.finding p { margin: 6px 0; }
+.finding ul { margin: 2px 0 6px; padding-left: 18px; }
+.finding .evidence { opacity: .8; }
+.finding .sub { font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; opacity: .7; margin-top: 6px; }

@@ -179,6 +179,20 @@ def format_result(status: dict[str, Any]) -> str:
         for field, label in status["timings"]:
             out.append(f"{label:<16}" + "".join(f"{ms(timings[field][k]):>10}" for k in ("med", "p90", "p95", "min", "max")))
 
+    for target in status["targets"]:
+        diag = (target.get("stats") or {}).get("diagnosis")
+        findings = [f for f in (diag or {}).get("findings", []) if f["level"] != "info"]
+        if not findings:
+            continue
+        out += ["", f"Possible reasons · {host_of(target['url'])}"]
+        if diag["categories"]:
+            out.append("  " + " · ".join(f"{c['label']} ×{c['count']}" for c in diag["categories"]))
+        for finding in findings:
+            out.append(f"  {'✗' if finding['level'] == 'critical' else '!'} {finding['title']}")
+            out.append(f"      {finding['detail']}")
+            out += [f"      - {reason}" for reason in finding["reasons"][:3]]
+        out.append("  (all reasons, what to check and a timeline are in the report)")
+
     reports = [t["stats"]["reportPath"] for t in status["targets"] if t["stats"] and t["stats"].get("reportPath")]
     if reports:
         out.append("")

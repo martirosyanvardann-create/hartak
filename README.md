@@ -129,6 +129,32 @@ After `make install` (or `pip install .`) the same commands are available as `pa
 * Comparisons always show the real difference (`3% slower`, `3.2× slower`);
   only exactly equal values are “the same”.
 
+## Possible reasons (diagnosis)
+
+When visits fail or are slow, every result explains **what happened, the likely
+reasons and what to check on the server**: in the GUI (under each site card), in
+each run's `report.html` (*Possible reasons*, with a timeline), in the command line
+output and in the downloads (`problems.csv`, plus `failureType`, `server` and
+`serverAnswer` columns in `visits.csv`).
+
+It recognises, among others:
+
+| What the test sees | Typical meaning |
+|---|---|
+| 404 / 401 / 403 / 405 on every request, answered quickly | wrong URL, method or missing token, not a load problem |
+| 502 / 503 / 504 | the app behind the proxy crashed or restarted, was overloaded, or too slow |
+| timeouts with no answer at all | requests queued: workers busy, blocked event loop, slow database / backend |
+| HTML arrived but the page never finished | a script, image or API call of the page hung (listed) |
+| everything fails from some moment until the end | the site went down during the test and did not recover |
+| failures only at the start | cold start, or the first burst of users overloaded the server |
+| many requests answered together after a long wait | all waited for one shared blocking thing (cache rebuild, one slow call) |
+| response time grows with load | not enough workers / CPU, no caching |
+
+To collect the evidence, the k6 scripts record per visit whether the HTML arrived,
+the `Server` / `X-Powered-By` headers and the start of the answer on failures, the
+page's failed requests and its slowest requests. The test only sees what a visitor
+sees; the server's own logs (for the times shown) confirm the actual cause.
+
 ## Project layout
 
 ```
@@ -145,6 +171,8 @@ pageload/
   modes.py              BrowserMode / ApiMode
   config.py             RunConfig, Settings, ApiRequest: all input validation
   analysis.py           percentiles, stats, compare, budget (pure functions)
+  diagnosis.py          possible reasons for failures / slowness (rule-based, pure functions)
+  diagnosis_html.py     the "Possible reasons" section of the reports
   results.py            reading a run folder
   report.py             HTML report
   export.py             downloads: visits/comparison CSV, summary page, ZIPs

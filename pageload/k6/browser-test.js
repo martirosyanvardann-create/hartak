@@ -76,6 +76,11 @@ const EXPECT_STATUS = __ENV.EXPECT_STATUS || '200';
 const EXPECTED = parseStatusSpec(EXPECT_STATUS);
 const TIMEOUT_MS = integerEnv('TIMEOUT_MS', 30000);
 const SCREENSHOT_ON_FAIL = __ENV.SCREENSHOT_ON_FAIL === '1';
+// Diagnostics kept per visit (for the "possible reasons" in the report).
+const MAX_FAILED_REQUESTS = 10;
+const MAX_SLOW_REQUESTS = 5;
+const BODY_SNIPPET = 300;
+const DIAG_HEADERS = ['server', 'via', 'x-powered-by', 'x-cache', 'cf-cache-status', 'retry-after', 'content-type'];
 const DEBUG_STEPS = __ENV.DEBUG_STEPS === '1';
 
 function step(name) {
@@ -217,6 +222,67 @@ const LCP_RECORDER = `
   } catch (error) {}
 `;
 
+function pickHeaders(all) {
+  const picked = {};
+  for (const [name, value] of Object.entries(all || {})) {
+    if (DIAG_HEADERS.includes(name.toLowerCase())) {
+      picked[name.toLowerCase()] = String(value).slice(0, 200);
+    }
+  }
+  return picked;
+}
+
+// Records what the network did during a visit: whether the HTML document
+// arrived at all, and which of the page's requests failed.
+function watchNetwork(page, visit, startedAt) {
+  const note = (entry) => {
+    visit.failedRequestCount += 1;
+    if (visit.failedRequests.length < MAX_FAILED_REQUESTS) {
+      visit.failedRequests.push(entry);
+    }
+  };
+
+  try {
+    page.on('response', (response) => {
+      try {
+        const request = response.request();
+        const type = request.resourceType();
+        const status = response.status();
+
+        if (type === 'Document' && visit.documentStatus === null) {
+          visit.documentStatus = status;
+          visit.documentMs = Date.now() - startedAt;
+          visit.responseHeaders = pickHeaders(response.headers());
+        }
+
+        // The main document's own status is already in httpStatus.
+        if (status >= 400 && type !== 'Document') {
+          note({ url: response.url().slice(0, 300), status, type });
+        }
+      } catch (error) {
+        // diagnostics must never fail a visit
+      }
+    });
+
+    page.on('requestfailed', (request) => {
+      try {
+        let reason = 'failed';
+        try {
+          const failure = request.failure ? request.failure() : null;
+          reason = (failure && (failure.errorText || failure)) || reason;
+        } catch (error) {
+          // older k6: no failure()
+        }
+        note({ url: request.url().slice(0, 300), error: String(reason).slice(0, 120), type: request.resourceType() });
+      } catch (error) {
+        // diagnostics must never fail a visit
+      }
+    });
+  } catch (error) {
+    // page.on not supported by this k6 version: visits run without network diagnostics
+  }
+}
+
 // Runs in the browser after the page is loaded. Reads the browser's own
 // Performance APIs; all times are ms since navigation start.
 const readPageTimings = () => {
@@ -231,6 +297,18 @@ const readPageTimings = () => {
     0
   );
 
+  // The slowest requests of the page: which API, script or image takes the time.
+  const slowRequests = resources
+    .slice()
+    .sort((a, b) => b.duration - a.duration)
+    .slice(0, 5)
+    .map((entry) => ({
+      url: entry.name.slice(0, 300),
+      ms: Math.round(entry.duration),
+      type: entry.initiatorType,
+      status: entry.responseStatus || null,
+    }));
+
   const bytes =
     (nav ? nav.transferSize : 0) +
     resources.reduce((sum, entry) => sum + (entry.transferSize || 0), 0);
@@ -244,6 +322,7 @@ const readPageTimings = () => {
     fullyLoadedMs: nav ? Math.max(nav.loadEventEnd, lastResourceEnd) : null,
     requests: resources.length + 1,
     transferBytes: bytes,
+    slowRequests,
   };
 };
 
@@ -270,6 +349,15 @@ export default async function () {
     fullyLoadedMs: null,
     requests: null,
     transferBytes: null,
+    // Diagnostics: did the HTML arrive (null = no answer at all), what the
+    // server answered on failures, failed / slowest requests of the page.
+    documentStatus: null,
+    documentMs: null,
+    responseHeaders: null,
+    bodySnippet: null,
+    failedRequests: [],
+    failedRequestCount: 0,
+    slowRequests: null,
     passed: false,
     error: null,
     screenshot: null,
@@ -290,6 +378,7 @@ export default async function () {
     await context.addInitScript(LCP_RECORDER);
     step('newPage');
     page = await context.newPage();
+    watchNetwork(page, visit, startedAt);
     step('goto');
 
     // One explicit wait: k6 resolves goto when the page reaches WAIT_UNTIL.
@@ -305,6 +394,11 @@ export default async function () {
     });
 
     if (!statusOK) {
+      try {
+        visit.bodySnippet = (await response.text()).replace(/\s+/g, ' ').trim().slice(0, BODY_SNIPPET);
+      } catch (error) {
+        // body not available
+      }
       throw new Error(
         `HTTP status ${visit.httpStatus}, expected ${EXPECT_STATUS}`
       );
@@ -335,7 +429,11 @@ export default async function () {
     );
     visit.error = `${stage}: ${error}`;
 
-    if (page && SCREENSHOT_ON_FAIL) {
+    // A page that never answered is blank: a screenshot shows nothing and can
+    // hang for another 30 s, so it is skipped for navigation timeouts.
+    const blank = stage === 'navigation' && visit.documentStatus === null && /timed out|timeout/i.test(String(error));
+
+    if (page && SCREENSHOT_ON_FAIL && !blank) {
       // Saved inside the run folder; the report links to it relatively.
       const name = `screenshots/fail-vu${__VU}-iter${__ITER}.png`;
       const path = REPORT_DIR ? `${REPORT_DIR}/${name}` : name;
@@ -448,6 +546,8 @@ export function handleSummary(data) {
       waitUntil: WAIT_UNTIL,
       viewport: `${VIEWPORT.width}x${VIEWPORT.height}`,
       totalRuntimeMs: data.state.testRunDurationMs,
+      vus: profiles[PROFILE].vus,
+      timeoutMs: TIMEOUT_MS,
       // Requested visits (fixed-count profiles); missing ones hung or never ran.
       expectedVisits: PROFILE === 'load' ? null : profiles[PROFILE].iterations,
       timings: timingStats,

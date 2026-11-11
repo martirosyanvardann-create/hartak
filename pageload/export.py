@@ -22,6 +22,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from . import diagnosis, diagnosis_html
 from .formatting import duration, host_of, ms, size
 from .job import job_result_path
 from .modes import get_mode
@@ -64,13 +65,37 @@ def visits_csv(run_dir: Path) -> str:
     mode = get_mode(data.summary.get("mode"))
     columns = (["visit", "vu", "startedAt", "url", "httpStatus"]
                + [t.field for t in mode.timings]
-               + ["requests", "transferBytes", "durationMs", "passed", "error"]
-               + (["method"] if mode.name == "api" else ["screenshot"]))
+               + ["requests", "transferBytes", "durationMs", "passed", "failureType", "error",
+                  "documentStatus", "server", "serverAnswer"]
+               + (["method"] if mode.name == "api" else ["failedRequestCount", "screenshot"]))
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=columns, extrasaction="ignore", lineterminator="\n")
     writer.writeheader()
     for visit in data.visits:
-        writer.writerow({key: _csv_value(visit.get(key)) for key in columns})
+        row = {key: _csv_value(visit.get(key)) for key in columns}
+        kind = diagnosis.classify(visit)
+        row["failureType"] = diagnosis.CATEGORIES[kind].label if kind else ""
+        row["server"] = (visit.get("responseHeaders") or {}).get("server") or ""
+        row["serverAnswer"] = diagnosis.readable_body(visit.get("bodySnippet"))
+        writer.writerow(row)
+    return out.getvalue()
+
+
+def run_diagnosis(run_dir: Path) -> dict[str, Any]:
+    data = load_run(run_dir)
+    return diagnosis.diagnose(data.visits, data.summary, mode=get_mode(data.summary.get("mode")),
+                              other_lines=data.other_lines)
+
+
+def problems_csv(items: list[tuple[str, dict[str, Any] | None]]) -> str:
+    """Possible reasons, one row per finding: [(url, diagnosis), ...]."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(["url", "level", "side", "title", "detail", "evidence", "possible reasons", "what to check"])
+    for url, diag in items:
+        for f in (diag or {}).get("findings", []):
+            writer.writerow([url, f["level"], f["side"], f["title"], f["detail"], " | ".join(f["evidence"]),
+                             " | ".join(f["reasons"]), " | ".join(f["checks"])])
     return out.getvalue()
 
 
@@ -186,8 +211,13 @@ def summary_html(status: dict[str, Any]) -> str:
     meta_html = "".join(f"<span>{e(str(k))} <b>{e(str(v))}</b></span>" for k, v in meta)
     warnings = "".join(f'<div class="warn">⚠ {e(w)}</div>' for w in status.get("warnings") or [])
 
+    reasons = "".join(
+        f'<h2 class="reasons">Possible reasons · {e(host_of(t["url"]))}</h2>'
+        + diagnosis_html.render(t["stats"]["diagnosis"], noun)
+        for t in status.get("targets", [])
+        if (t.get("stats") or {}).get("diagnosis") and t["stats"]["diagnosis"].get("findings"))
     return _SUMMARY_TEMPLATE.format(title=e(title), meta=meta_html, warnings=warnings, verdict=verdict,
-                                    cards="".join(cards), table=table)
+                                    cards="".join(cards), table=table, reasons=reasons)
 
 
 _SUMMARY_TEMPLATE = """<!doctype html>
@@ -225,6 +255,11 @@ th {{ font-size: 12px; color: var(--muted); }}
 tr.main td {{ font-weight: 700; background: #f8f9fc; }}
 td.slower {{ color: var(--bad); }} td.faster {{ color: var(--good); }}
 .table-wrap {{ overflow-x: auto; }}
+h2.reasons {{ font-size: 16px; margin: 28px 0 10px; }}
+.dx h3 {{ font-size: 14px; margin: 18px 0 8px; }}
+.dx table {{ margin-top: 0; }} .dx td, .dx th {{ text-align: left; }} .dx td.n, .dx th.n {{ text-align: right; }}
+.dx .desc {{ color: var(--muted); font-size: 12px; }} .dx .note {{ color: var(--bad); font-size: 12px; }}
+.dx .panel {{ background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px; }}
 </style>
 </head>
 <body>
@@ -234,6 +269,7 @@ td.slower {{ color: var(--bad); }} td.faster {{ color: var(--good); }}
 {verdict}
 <div class="cards">{cards}</div>
 <div class="table-wrap">{table}</div>
+{reasons}
 </main>
 </body>
 </html>
@@ -246,6 +282,7 @@ def _add_run_folder(archive: zipfile.ZipFile, run_dir: Path) -> None:
         if path.is_file():
             archive.write(path, f"{run_dir.name}/{path.relative_to(run_dir).as_posix()}")
     archive.writestr(f"{run_dir.name}/{VISITS_CSV}", visits_csv(run_dir))
+    archive.writestr(f"{run_dir.name}/problems.csv", problems_csv([(run_dir.name, run_diagnosis(run_dir))]))
 
 
 def run_zip(run_dir: Path) -> bytes:
@@ -257,11 +294,18 @@ def run_zip(run_dir: Path) -> bytes:
 
 def job_zip(status: dict[str, Any], reports_dir: Path) -> bytes:
     compare = bool(status.get("comparison"))
+    for target in status.get("targets", []):     # results saved before diagnoses existed
+        stats = target.get("stats")
+        run_dir = find_run_dir(reports_dir, target.get("runFolder", ""))
+        if stats and "diagnosis" not in stats and run_dir:
+            stats["diagnosis"] = run_diagnosis(run_dir)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("comparison.html" if compare else "summary.html", summary_html(status))
         archive.writestr("comparison.csv" if compare else "timings.csv", results_csv(status))
         archive.writestr("result.json", json.dumps(status, indent=2, default=str))
+        archive.writestr("problems.csv", problems_csv(
+            [(t["url"], (t.get("stats") or {}).get("diagnosis")) for t in status.get("targets", [])]))
         for target in status.get("targets", []):
             run_dir = find_run_dir(reports_dir, target.get("runFolder", ""))
             if run_dir:

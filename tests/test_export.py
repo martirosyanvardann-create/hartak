@@ -11,7 +11,7 @@ from pageload.config import RunConfig
 from pageload.job import Job, job_result_path
 from pageload.report import build_report
 
-from .helpers import FakeBrowser, FakeRunner, browser_visit, write_run
+from .helpers import FakeBrowser, FakeRunner, browser_visit, visit, write_run
 
 
 def finished_job(reports: Path, compare: bool = True) -> Job:
@@ -55,13 +55,26 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(rows[0]["fullyLoadedMs"], "1234.6")
         self.assertEqual(rows[0]["passed"], "True")
         self.assertIn("screenshot", rows[0])
+        self.assertEqual(rows[0]["failureType"], "")
+
+    def test_failure_details_in_csv_and_summary(self):
+        failed = visit(2, passed=False, httpStatus=502,
+                               error="navigation: Error: HTTP status 502, expected 200",
+                               bodySnippet="<html><title>502 Bad Gateway</title></html>",
+                               responseHeaders={"server": "nginx"})
+        run = write_run(self.reports / "run", [browser_visit(1, 1000), failed], {"mode": "browser"})
+        row = list(csv.DictReader(io.StringIO(export.visits_csv(run))))[1]
+        self.assertEqual((row["failureType"], row["server"]), ("502 Bad Gateway", "nginx"))
+        self.assertEqual(row["serverAnswer"], 'HTML page titled "502 Bad Gateway"')
+        problems = list(csv.DictReader(io.StringIO(export.problems_csv([("u", export.run_diagnosis(run))]))))
+        self.assertIn("502 Bad Gateway", problems[0]["title"])
 
     def test_comparison_zip(self):
         job = finished_job(self.reports)
         status = export.find_job_result(self.reports, job.id)
         names = set(zipfile.ZipFile(io.BytesIO(export.job_zip(status, self.reports))).namelist())
         a, b = job.targets[0].run_dir.name, job.targets[1].run_dir.name
-        for name in ("comparison.html", "comparison.csv", "result.json",
+        for name in ("comparison.html", "comparison.csv", "result.json", "problems.csv", f"{a}/problems.csv",
                      f"{a}/report.html", f"{a}/visits.csv", f"{a}/console.log", f"{b}/visits.csv"):
             self.assertIn(name, names)
         self.assertEqual(export.job_zip_name(status), f"pageload-comparison-dev.hartak.am-vs-hartak.am-{job.id}.zip")

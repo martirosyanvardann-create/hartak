@@ -59,6 +59,8 @@ class JobTest(unittest.TestCase):
         self.assertEqual(target["phase"], "incomplete")
         self.assertIn("2 of 4 visits hung", target["problem"])
         self.assertFalse(job.status()["ok"])
+        titles = [f["title"] for f in target["stats"]["diagnosis"]["findings"]]
+        self.assertIn("2 visits never finished", titles)
 
     def test_budget_makes_run_not_ok(self):
         runner = FakeRunner([[browser_visit(i, 3000) for i in range(1, 5)]])

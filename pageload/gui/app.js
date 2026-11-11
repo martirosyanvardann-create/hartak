@@ -319,7 +319,28 @@
       </div>
       ${t.budget ? `<div class="budget ${t.budget.passed ? 'ok' : 'bad'}">${t.budget.passed ? '✓' : '✗'} Budget: ${esc(mainLabel.toLowerCase())} p95 ${fmtMs(t.budget.p95Ms)} ${t.budget.passed ? '≤' : '>'} ${fmtMs(t.budget.limitMs)}</div>` : ''}
       ${t.problem ? `<div class="problem">${esc(t.problem)}</div>` : ''}
-      ${s.errors.length ? `<ul class="errors">${s.errors.map((e) => `<li>${api ? 'Request' : 'Visit'} ${e.visit}: ${esc(e.error)}</li>`).join('')}</ul>` : ''}
+      ${s.diagnosis ? diagnosisBlock(s.diagnosis, s.report)
+        : s.errors.length ? `<ul class="errors">${s.errors.map((e) => `<li>${api ? 'Request' : 'Visit'} ${e.visit}: ${esc(e.error)}</li>`).join('')}</ul>` : ''}
+    </div>`;
+  }
+
+  // "Possible reasons": failures by type, then each finding (click to see reasons and what to check).
+  function diagnosisBlock(d, report) {
+    const serious = d.findings.filter((f) => f.level !== 'info');
+    if (!d.findings.length) return '';
+    const chips = d.categories.map((c) => `<span class="chip" title="${esc(c.meaning)} First ${esc(c.first)}, last ${esc(c.last)}.">${esc(c.label)} <b>${c.count}</b></span>`).join('');
+    const items = d.findings.map((f) => `
+      <details class="finding ${esc(f.level)}">
+        <summary><span class="lvl">${esc(f.level === 'info' ? 'note' : f.level)}</span>${esc(f.title)}</summary>
+        <p>${esc(f.detail)}</p>
+        ${f.evidence.length ? `<ul class="evidence">${f.evidence.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${f.reasons.length ? `<div class="sub">Possible reasons</div><ul>${f.reasons.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${f.checks.length ? `<div class="sub">What to check</div><ul>${f.checks.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      </details>`).join('');
+    return `<div class="diagnosis">
+      <div class="diag-head ${serious.length ? 'bad' : ''}">${serious.length ? 'Possible reasons' : 'Notes'}${report ? ` · <a href="${esc(report)}#reasons" target="_blank" rel="noopener">timeline and details ↗</a>` : ''}</div>
+      ${chips ? `<div class="chips">${chips}</div>` : ''}
+      ${items}
     </div>`;
   }
 

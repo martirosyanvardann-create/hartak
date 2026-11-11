@@ -135,6 +135,19 @@ export const options = {
   },
 };
 
+const BODY_SNIPPET = 300;
+const DIAG_HEADERS = ['server', 'via', 'x-powered-by', 'x-cache', 'cf-cache-status', 'retry-after', 'content-type'];
+
+function pickHeaders(all) {
+  const picked = {};
+  for (const [name, value] of Object.entries(all || {})) {
+    if (DIAG_HEADERS.includes(name.toLowerCase())) {
+      picked[name.toLowerCase()] = String(value).slice(0, 200);
+    }
+  }
+  return picked;
+}
+
 function headerValue(response, name) {
   const wanted = name.toLowerCase();
 
@@ -166,6 +179,10 @@ export default function () {
     transferBytes: null,
     passed: false,
     error: null,
+    // Diagnostics for failed requests: k6 error code, what the server answered.
+    errorCode: null,
+    responseHeaders: null,
+    bodySnippet: null,
     durationMs: null,
   };
 
@@ -198,6 +215,13 @@ export default function () {
       ? `request: ${response.error}`
       : `request: HTTP status ${response.status}, expected ${EXPECT_STATUS}`;
     console.error(`Request failed (VU ${__VU}, iteration ${__ITER}): ${visit.error}`);
+    visit.errorCode = response.error_code || null;
+    if (response.status) {
+      visit.responseHeaders = pickHeaders(response.headers);
+      if (typeof response.body === 'string') {
+        visit.bodySnippet = response.body.replace(/\s+/g, ' ').trim().slice(0, BODY_SNIPPET);
+      }
+    }
   } else {
     for (const [field] of TIMINGS) {
       trends[field].add(visit[field]);
@@ -261,6 +285,8 @@ export function handleSummary(data) {
       viewport: null,
       totalRuntimeMs: data.state.testRunDurationMs,
       expectedVisits: ITERATIONS,
+      vus: VUS,
+      timeoutMs: TIMEOUT_MS,
       timings: timingStats,
     }, null, 2);
   }

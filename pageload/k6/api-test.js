@@ -31,6 +31,7 @@
  */
 
 import http from 'k6/http';
+import { parseHTML } from 'k6/html';
 import { check, sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
@@ -93,12 +94,104 @@ if (!LOAD && VUS > ITERATIONS) {
 
 let HEADERS = {};
 
+// Burst mode (set by the pageload tool): ask like a real browser does, and with
+// FULL_PAGE also download the page's own scripts, styles and images (same site only:
+// third-party analytics, fonts and ads are not the tested server's load).
+const BROWSER_HEADERS = __ENV.BROWSER_HEADERS === '1';
+const FULL_PAGE = __ENV.FULL_PAGE === '1';
+const MAX_PAGE_FILES = 100;
+const BROWSER_DEFAULTS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) '
+    + 'Chrome/131.0.0.0 Safari/537.36 pageload-burst',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'hy-AM,hy;q=0.9,en;q=0.8',
+  'Accept-Encoding': 'gzip, deflate, br',
+};
+
 if (__ENV.API_HEADERS) {
   try {
     HEADERS = JSON.parse(__ENV.API_HEADERS);
   } catch (error) {
     throw new Error(`API_HEADERS must be a JSON object: ${error}`);
   }
+}
+
+if (BROWSER_HEADERS) {
+  HEADERS = { ...BROWSER_DEFAULTS, ...HEADERS };
+}
+
+// Absolute URL of a link found in the page, or null for other sites / data: URLs.
+function resolveUrl(link, base) {
+  const origin = base.match(/^https?:\/\/[^/]+/i)[0];
+  let url;
+  if (/^https?:\/\//i.test(link)) {
+    url = link;
+  } else if (link.startsWith('//')) {
+    url = `${base.split(':')[0]}:${link}`;
+  } else if (link.startsWith('/')) {
+    url = origin + link;
+  } else if (/^[a-z]+:/i.test(link) || link.startsWith('#')) {
+    return null;
+  } else {
+    url = base.replace(/[?#].*$/, '').replace(/[^/]*$/, '') + link;
+  }
+  return url.toLowerCase().startsWith(origin.toLowerCase()) ? url.split('#')[0] : null;
+}
+
+// The files a browser downloads right away: scripts, stylesheets, preloads and
+// non-lazy images of the same site.
+function pageFiles(html, base) {
+  const doc = parseHTML(html);
+  const links = new Set();
+  const add = (value) => {
+    const url = value ? resolveUrl(String(value).trim(), base) : null;
+    if (url && links.size < MAX_PAGE_FILES) {
+      links.add(url);
+    }
+  };
+  doc.find('script[src]').each((_, el) => add(el.getAttribute('src')));
+  doc.find('link[href]').each((_, el) => {
+    const rel = String(el.getAttribute('rel') || '').toLowerCase();
+    if (/stylesheet|preload|modulepreload|icon/.test(rel)) {
+      add(el.getAttribute('href'));
+    }
+  });
+  doc.find('img[src]').each((_, el) => {
+    if (String(el.getAttribute('loading') || '').toLowerCase() !== 'lazy') {
+      add(el.getAttribute('src'));
+    }
+  });
+  return [...links];
+}
+
+function downloadPageFiles(response, visit) {
+  const files = pageFiles(String(response.body), response.url || BASE_URL);
+  const started = Date.now();
+  const answers = files.length
+    ? http.batch(files.map((url) => ['GET', url, null, {
+      headers: { ...HEADERS, Accept: '*/*' },
+      timeout: `${TIMEOUT_MS}ms`,
+      tags: { name: 'page file' },
+    }]))
+    : [];
+  visit.filesMs = Date.now() - started;
+  visit.files = files.length;
+  visit.filesBytes = 0;
+  visit.filesFailed = 0;
+  visit.failedRequests = [];
+  answers.forEach((answer, i) => {
+    visit.filesBytes += Number(headerValue(answer, 'Content-Length')) || (answer.body ? answer.body.length : 0);
+    // A browser cannot show the page without these: errors and 5xx count, a missing (4xx) file is only noted.
+    if (answer.error || answer.status === 0 || answer.status >= 400) {
+      if (answer.error || answer.status === 0 || answer.status >= 500) {
+        visit.filesFailed += 1;
+      }
+      if (visit.failedRequests.length < 10) {
+        visit.failedRequests.push({ url: files[i], status: answer.status || null,
+          error: answer.error || null, type: 'page file' });
+      }
+    }
+  });
 }
 
 // Timings recorded per request: [visit field, metric name, label].
@@ -198,6 +291,7 @@ export default function () {
     errorCode: null,
     responseHeaders: null,
     bodySnippet: null,
+    pageMs: null,
     durationMs: null,
   };
 
@@ -241,7 +335,18 @@ export default function () {
     for (const [field] of TIMINGS) {
       trends[field].add(visit[field]);
     }
+    if (FULL_PAGE && typeof response.body === 'string') {
+      downloadPageFiles(response, visit);
+      visit.requests = 1 + visit.files;
+      visit.transferBytes += visit.filesBytes;
+      if (visit.filesFailed) {
+        visit.passed = false;
+        visit.error = `page files: ${visit.filesFailed} of ${visit.files} failed `
+          + `(${visit.failedRequests.map((f) => f.status || f.error).slice(0, 3).join(', ')})`;
+      }
+    }
   }
+  visit.pageMs = visit.totalMs + (visit.filesMs || 0);
 
   failRate.add(!visit.passed);
   completedRequests.add(1);

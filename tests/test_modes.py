@@ -8,7 +8,7 @@ from pageload.modes import MODES, get_mode
 
 class ModesTest(unittest.TestCase):
     def test_registry(self):
-        self.assertEqual(set(MODES), {"browser", "api"})
+        self.assertEqual(set(MODES), {"browser", "api", "burst"})
         self.assertIs(get_mode(None), MODES["browser"])
         self.assertIs(get_mode("unknown"), MODES["browser"])
 

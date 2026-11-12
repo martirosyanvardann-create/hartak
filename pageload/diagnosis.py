@@ -222,7 +222,7 @@ class _Context:
     def findings(self) -> list[dict[str, Any]]:
         if not self.visits:
             return []
-        rules = (self._test_computer, self._background_load, self._outage, self._config_errors, self._gateway_and_server_errors, self._timeouts,
+        rules = (self._test_computer, self._network_limit, self._background_load, self._outage, self._config_errors, self._gateway_and_server_errors, self._timeouts,
                  self._slow_start, self._network_errors, self._test_browser, self._missing,
                  self._load_growth, self._queued_together, self._where_time_goes, self._resources_failing,
                  self._heavy_page)
@@ -440,6 +440,49 @@ class _Context:
                     f"Or at most {recommended} browser users",
                     "Or API-only mode to test only the server",
                     "Docker: give Docker Desktop more CPU and memory (Settings → Resources)"])]
+
+    def network_limited(self) -> dict[str, Any] | None:
+        """Evidence that this computer's own connection, not the server, limited the downloads."""
+        m = self.machine or {}
+        peak, flat = m.get("netMaxMbps"), m.get("netNearMaxShare")
+        if not peak or flat is None or flat < 0.3:
+            return None
+        if self.browser:
+            return None   # browsers also wait for CPU and many small files; only judged for plain HTTP
+        done = [v for v in self.passed if isinstance(v.get("receiveMs"), (int, float))
+                and isinstance(v.get("ttfbMs"), (int, float))]
+        if len(done) < 3:
+            return None
+        receive = percentile([v["receiveMs"] for v in done], 50)
+        first = percentile([v["ttfbMs"] for v in done], 50)
+        if receive < 1000 or receive < 2 * first:
+            return None
+        size_med = percentile([v["transferBytes"] for v in done if v.get("transferBytes")], 50)
+        return {"peak": peak, "flat": flat, "receive": receive, "first": first, "size": size_med}
+
+    def _network_limit(self) -> list[dict]:
+        found = self.network_limited()
+        if not found:
+            return []
+        total = (found["size"] or 0) * self.vus
+        seconds = total * 8 / 1_000_000 / found["peak"] if found["peak"] else None
+        level = "critical" if self.failed else "warning"
+        return [self.finding(
+            level, "test computer",
+            f"This computer's internet connection was probably the limit (about {round(found['peak'])} Mbit/s)",
+            f"The server started answering quickly (first byte median {round(found['first'])} ms), but receiving "
+            f"each answer took {round(found['receive'] / 1000, 1)} s (median)"
+            + (f" for {size(found['size'])}" if found["size"] else "") + ". "
+            f"This computer downloaded at most {found['peak']} Mbit/s and stayed close to that for "
+            f"{round(found['flat'] * 100)}% of the run: a flat ceiling, typical of the test computer's own "
+            "connection (e.g. Wi-Fi or a phone hotspot)."
+            + (f" {self.vus} users × {size(found['size'])} = {size(total)} at once needs about "
+               f"{round(seconds)} s at that speed." if seconds else ""),
+            reasons=["The test computer's connection is slower than what this many parallel downloads need",
+                     "Large, uncompressed answers multiply the amount of data"],
+            checks=["Run the same test from a wired office connection or a server",
+                    "Compare with a speed test of this connection",
+                    "Ask the site to compress its answers (gzip / brotli) — real visitors benefit too"])]
 
     def _background_load(self) -> list[dict]:
         """Hybrid mode: the HTTP load users' own results are server-side evidence."""

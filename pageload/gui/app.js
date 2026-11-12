@@ -11,9 +11,10 @@
   const $ = (id) => document.getElementById(id);
   const STORE_KEY = 'pageLoadCompare.form';
   const SETTING_FIELDS = ['timeoutSec', 'timeLimitSec', 'expectStatus', 'budgetP95Ms', 'screen', 'viewportWidth', 'viewportHeight', 'locale', 'screenshots'];
-  const FORM_FIELDS = ['url', 'compareUrl', 'vus', 'iterations', 'waitUntil', 'apiOnly', 'method', 'headers', 'body', ...SETTING_FIELDS, 'resetSettings'];
+  const BURST_FIELDS = ['burstUsers', 'rounds', 'pauseSec', 'recoverySec', 'slowMs', 'fullPage'];
+  const FORM_FIELDS = ['url', 'compareUrl', 'vus', 'browsers', 'iterations', 'waitUntil', 'method', 'headers', 'body', ...BURST_FIELDS, ...SETTING_FIELDS, 'resetSettings'];
   // Headers and body may hold tokens, so they are never saved in the browser.
-  const SAVED_FIELDS = ['url', 'compareUrl', 'vus', 'browsers', 'iterations', 'waitUntil', 'apiOnly', 'method', ...SETTING_FIELDS];
+  const SAVED_FIELDS = ['url', 'compareUrl', 'vus', 'browsers', 'iterations', 'waitUntil', 'testType', 'method', ...BURST_FIELDS, ...SETTING_FIELDS];
 
   let CONFIG = null;          // from GET /api/config
   let SETTING_DEFAULTS = {};  // form values that mean "default"
@@ -32,7 +33,11 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const hostOf = (u) => { try { return new URL(u).host; } catch { return u; } };
   const verdictClass = (d) => (d && d.verdict) || 'same';
-  const modeOf = (api) => CONFIG.modes[api ? 'api' : 'browser'];
+  // Test type: 'browser', 'api' or 'burst' (a radio group in the form).
+  const testType = () => (document.querySelector('input[name="testType"]:checked') || {}).value || 'browser';
+  const modeOf = (type) => CONFIG.modes[type || 'browser'] || CONFIG.modes.browser;
+  // "10, 20, 30" → [10, 20, 30] (invalid parts become NaN and are caught by validate).
+  const parseUsers = (text) => String(text).split(/[\s,;]+/).filter(Boolean).map(Number);
 
   // ---------- form ----------
   function readSettings() {
@@ -59,7 +64,15 @@
       browsers: $('browsers').value.trim() === '' ? null : Number($('browsers').value),
       iterations: Number($('iterations').value),
       waitUntil: $('waitUntil').value,
-      apiOnly: $('apiOnly').checked,
+      type: testType(),
+      mode: testType(),
+      apiOnly: testType() === 'api',
+      burstUsers: $('burstUsers').value,
+      rounds: Number($('rounds').value),
+      pauseSec: Number($('pauseSec').value),
+      recoverySec: Number($('recoverySec').value),
+      slowMs: Number($('slowMs').value),
+      fullPage: $('fullPage').checked,
       method: $('method').value,
       headers: $('headers').value,
       body: $('body').value,
@@ -67,9 +80,12 @@
     };
   }
 
-  const fieldValue = (id) => ($(id).type === 'checkbox' ? $(id).checked : $(id).value);
+  const fieldValue = (id) => (id === 'testType' ? testType() : $(id).type === 'checkbox' ? $(id).checked : $(id).value);
   function setField(id, value) {
-    if ($(id).type === 'checkbox') $(id).checked = value === true;
+    if (id === 'testType') {
+      const radio = document.querySelector(`input[name="testType"][value="${value}"]`);
+      if (radio) radio.checked = true;
+    } else if ($(id).type === 'checkbox') $(id).checked = value === true;
     else $(id).value = value;
   }
 
@@ -81,13 +97,17 @@
 
   // Show the fields and limits of the chosen mode.
   function applyMode() {
-    const api = $('apiOnly').checked;
-    const mode = modeOf(api);
+    const type = testType();
+    const api = type === 'api', burst = type === 'burst', browser = type === 'browser';
+    const mode = modeOf(type);
     $('apiFields').hidden = !api;
-    $('waitUntilField').hidden = api;
-    $('browsersField').hidden = api;
+    $('burstFields').hidden = !burst;
+    $('vusField').hidden = burst;
+    $('iterationsField').hidden = burst;
+    $('waitUntilField').hidden = !browser;
+    $('browsersField').hidden = !browser;
     $('browsers').max = $('vus').value || 1;
-    $('browserSettings').hidden = api;
+    $('browserSettings').hidden = !browser;
     $('iterationsLabel').textContent = `Total ${mode.noun} per URL`;
     $('timeoutLabel').textContent = `Timeout per ${mode.nounSingular} (s)`;
     $('vus').max = mode.limits.vus;
@@ -101,15 +121,20 @@
   // Above the recommended users/visits the run is allowed, with a warning.
   // (Same rules as RunConfig.warnings on the server, which reports them again.)
   function formWarnings(f) {
-    const mode = modeOf(f.apiOnly);
+    const mode = modeOf(f.type);
     const limits = mode.limits;
     const notes = [];
-    if (!f.apiOnly) {
+    if (f.type === 'burst') {
+      const most = Math.max(...parseUsers(f.burstUsers).filter(Number.isFinite), 0);
+      if (most > limits.recommendedVus) notes.push(`Bursts of up to ${most} users: ${limits.loadNote}.`);
+      return notes;
+    }
+    if (f.type === 'browser') {
       const browsers = measuring(f);
       if (browsers > limits.recommendedVus && f.vus <= limits.vus) {
         notes.push(`${browsers} browser users is more than the recommended ${limits.recommendedVus} for this computer: ${limits.loadNote}.`);
       }
-      const api = modeOf(true).limits;
+      const api = modeOf('api').limits;
       if (f.vus - browsers > api.recommendedVus) notes.push(`${f.vus - browsers} load users: ${api.loadNote}.`);
     } else if (f.vus > limits.recommendedVus && f.vus <= limits.vus) {
       notes.push(`${f.vus} parallel users is more than the recommended ${limits.recommendedVus} for ${mode.kind} tests: ${limits.loadNote}.`);
@@ -122,7 +147,7 @@
 
   // Users that run the measured visits: the real browsers (hybrid mode) or all users.
   function measuring(f) {
-    return !f.apiOnly && f.browsers && f.browsers < f.vus ? f.browsers : f.vus;
+    return f.type === 'browser' && f.browsers && f.browsers < f.vus ? f.browsers : f.vus;
   }
 
   function showWarnings(id, notes) {
@@ -137,7 +162,7 @@
     if (st.timeLimitSec) parts.push(`limit ${st.timeLimitSec} s`);
     if (st.expectStatus) parts.push(`status ${esc(st.expectStatus)}`);
     if (st.budgetP95Ms) parts.push(`budget p95 ≤ ${st.budgetP95Ms} ms`);
-    if (!f.apiOnly) {
+    if (f.type === 'browser') {
       if (st.viewportWidth !== d.viewportWidth || st.viewportHeight !== d.viewportHeight) parts.push(`screen ${st.viewportWidth}×${st.viewportHeight}`);
       if (st.locale) parts.push(`language ${esc(st.locale)}`);
       if (!st.screenshots) parts.push('no screenshots');
@@ -148,19 +173,34 @@
   function updateSummary() {
     applyMode();
     const f = readForm();
-    const mode = modeOf(f.apiOnly);
+    const mode = modeOf(f.type);
     const browsers = measuring(f);
-    const hybrid = !f.apiOnly && browsers < f.vus;
+    const hybrid = f.type === 'browser' && browsers < f.vus;
     const users = hybrid
       ? `<b>${browsers} real ${browsers === 1 ? 'browser' : 'browsers'}</b>, while <b>${f.vus - browsers} more users</b> load the same page with plain HTTP requests (hybrid: ${f.vus} users in total)`
       : `<b>${f.vus} parallel ${f.vus === 1 ? 'user' : 'users'}</b>`;
+    if (f.type === 'burst') {
+      const steps = parseUsers(f.burstUsers).filter((n) => Number.isInteger(n) && n > 0);
+      const list = steps.length > 1 ? `${steps.slice(0, -1).join(', ')} and ${steps[steps.length - 1]}` : steps.join('');
+      const total = steps.reduce((a, b) => a + b, 0) * (f.rounds || 1);
+      $('formSummary').innerHTML = steps.length
+        ? `Each URL: bursts of <b>${list}</b> separate users at the same moment, <b>${f.rounds}</b> ${f.rounds === 1 ? 'round' : 'rounds'} each, ${f.pauseSec} s apart` +
+          ` (${total} requests${f.fullPage ? ', each with the page’s own files' : ''}). The site is checked before, and watched for up to ${f.recoverySec} s after every burst.` +
+          (f.compareUrl ? ' URLs run one after the other.' : '')
+        : '';
+      showWarnings('formWarning', formWarnings(f));
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(SAVED_FIELDS.map((k) => [k, fieldValue(k)]))));
+      } catch { /* storage unavailable */ }
+      return;
+    }
     $('formSummary').innerHTML = f.vus && f.iterations
       ? `${f.apiOnly ? `API test (${esc(f.method)}, no browser): each` : 'Each'} URL gets <b>${f.iterations}</b> ${mode.noun} measured by ${users}` +
         (f.compareUrl ? ' — URLs run one after the other, so they don’t slow each other down.' : '.') +
         settingsSummary(f)
       : '';
     showWarnings('formWarning', formWarnings(f));
-    if (!f.apiOnly && measuring(f) > mode.limits.recommendedVus && f.vus > 3 && f.iterations >= 3) {
+    if (f.type === 'browser' && measuring(f) > mode.limits.recommendedVus && f.vus > 3 && f.iterations >= 3) {
       $('formWarning').insertAdjacentHTML('beforeend',
         `<p><button type="button" class="btn-hybrid" id="useHybrid">Use hybrid mode: 3 real browsers + ${f.vus - 3} HTTP load users</button></p>`);
       $('useHybrid').addEventListener('click', () => { $('browsers').value = 3; updateSummary(); });
@@ -174,9 +214,10 @@
     try {
       const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
       if (saved) {
+        if (saved.testType == null && saved.apiOnly === true) saved.testType = 'api';   // older saved forms
         SAVED_FIELDS.forEach((k) => {
           if (saved[k] == null) return;
-          if (saved[k] === '' && $(k).type !== 'checkbox' && !(k in SETTING_DEFAULTS)) return;
+          if (k !== 'testType' && saved[k] === '' && $(k).type !== 'checkbox' && !(k in SETTING_DEFAULTS)) return;
           setField(k, saved[k]);
         });
       }
@@ -192,11 +233,22 @@
     if (!f.url) return 'Enter a URL.';
     if (!urlOk(f.url)) return 'URL must start with http:// or https://';
     if (f.compareUrl && !urlOk(f.compareUrl)) return 'Compare URL must start with http:// or https://';
-    const mode = modeOf(f.apiOnly);
+    const mode = modeOf(f.type);
+    if (f.type === 'burst') {
+      const steps = parseUsers(f.burstUsers);
+      const max = CONFIG.burst.maxUsers;
+      if (!steps.length || steps.length > 10 || !steps.every((n) => Number.isInteger(n) && n >= 1 && n <= max)) {
+        return `Users at the same moment: up to 10 numbers, each 1–${max}, e.g. 10, 20, 30.`;
+      }
+      for (const [key, [low, high]] of Object.entries(CONFIG.burst.ranges)) {
+        if (!Number.isInteger(f[key]) || f[key] < low || f[key] > high) return `${$(key).getAttribute('aria-label')} must be ${low}–${high}.`;
+      }
+      return null;
+    }
     const { vus, iterations } = mode.limits;
     if (!Number.isInteger(f.vus) || f.vus < 1 || f.vus > vus) return `Parallel users must be 1–${vus} (the maximum for ${mode.kind} tests).`;
     if (!Number.isInteger(f.iterations) || f.iterations < 1 || f.iterations > iterations) return `Total ${mode.noun} must be 1–${iterations} (the maximum).`;
-    if (!f.apiOnly && f.browsers != null && (!Number.isInteger(f.browsers) || f.browsers < 1 || f.browsers > f.vus)) {
+    if (f.type === 'browser' && f.browsers != null && (!Number.isInteger(f.browsers) || f.browsers < 1 || f.browsers > f.vus)) {
       return `Real browsers must be 1–${f.vus} (at most the parallel users), or empty for all users.`;
     }
     if (measuring(f) > f.iterations) return `${measuring(f) < f.vus ? 'Real browsers' : 'Parallel users'} (${measuring(f)}) can’t be more than total ${mode.noun} (${f.iterations}).`;
@@ -216,6 +268,7 @@
 
   function setRunning(running) {
     FORM_FIELDS.forEach((k) => { $(k).disabled = running; });
+    document.querySelectorAll('input[name="testType"]').forEach((radio) => { radio.disabled = running; });
     $('runBtn').disabled = running;
     $('runBtn').textContent = running ? 'Running…' : 'Run';
     $('stopBtn').hidden = !running;
@@ -313,6 +366,7 @@
 
   // ---------- results ----------
   function siteCard(t, i, job) {
+    if (job.mode === 'burst') return burstCard(t, i);
     const api = job.mode === 'api';
     const mainKey = job.mainMetric;
     const mainLabel = job.mainLabel;
@@ -353,12 +407,47 @@
     </div>`;
   }
 
+  // Burst test: the answer, one row per burst (users × round), and the check before.
+  function burstCard(t, i) {
+    const s = t.stats;
+    const b = s && s.burst;
+    if (!b) {
+      return t.problem ? `<div class="card site failed"><div class="site-head"><span class="name">${esc(hostOf(t.url))}</span></div><div class="problem flush">${esc(t.problem)}</div></div>` : '';
+    }
+    const good = b.steps && b.steps.length && b.steps.every((x) => x.worst === 'ok');
+    const sec = (v) => (v == null ? '—' : `${(v / 1000).toFixed(1)} s`);
+    const after = (r) => {
+      const rec = r.recovery || {};
+      if (!rec.recovered) return '<span class="bad">still not answering</span>';
+      return rec.afterS ? `answered again after ${Math.round(rec.afterS)} s` : 'answered right away';
+    };
+    const rows = (b.rounds || []).map((r) => `<tr>
+      <td class="n">${r.users}</td><td class="n">${r.round}</td><td>${r.icon} ${esc(r.label)}</td>
+      <td class="n">${r.answered} / ${r.users}</td><td class="n">${sec(r.first_byte_p95)}</td><td class="n">${sec(r.page_p95)}</td>
+      <td>${after(r)}</td><td class="wrap">${esc(Object.entries(r.errors || {}).map(([k, n]) => `${k} ×${n}`).join(', '))}${r.problem ? ` — ${esc(r.problem)}` : ''}</td></tr>`).join('');
+    const before = b.before || {};
+    return `<div class="card site ${i ? 'b' : ''}">
+      <div class="site-head">
+        <span class="name">${esc(hostOf(t.url))}</span>
+        <span class="site-links">
+          ${s.report ? `<a href="${esc(s.report)}" target="_blank" rel="noopener">Full report ↗</a>` : ''}
+          ${s.download ? `<a href="${esc(s.download)}" download>Download ↓</a>` : ''}
+        </span>
+      </div>
+      <div class="burst-answer ${good ? 'good' : 'bad'}">${esc(b.answer || '')}</div>
+      <div class="runline">Check before: ${before.ok ? 'the site answered' : '<span class="bad">the site did not answer</span>'} (${esc(String(before.status || before.error || '—'))}, ${Math.round(before.ms || 0)} ms)</div>
+      ${rows ? `<div class="table-scroll"><table class="burst-table"><thead><tr><th class="n">Users at once</th><th class="n">Round</th><th>Result</th><th class="n">Got the page</th><th class="n">First byte p95</th><th class="n">Whole page p95</th><th>After the burst</th><th>Problems</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      ${machineLine(s.machine)}
+      ${t.problem ? `<div class="problem">${esc(t.problem)}</div>` : ''}
+    </div>`;
+  }
+
   // The test computer's own load during the run: overloaded means the timings are not reliable.
   function machineLine(m) {
     if (!m || m.cpuMax == null) return '';
     const busy = Math.round((m.busyShare || 0) * 100);
     const over = busy >= 25 || (m.memoryMax || 0) >= 95;
-    return `<div class="runline ${over ? 'bad' : ''}">${over ? '⚠ ' : ''}Test computer: CPU max ${Math.round(m.cpuMax)}%${busy ? `, 90%+ for ${busy}% of the run` : ''} · memory max ${Math.round(m.memoryMax ?? 0)}%${over ? ' — overloaded, timings not reliable' : ''}</div>`;
+    return `<div class="runline ${over ? 'bad' : ''}">${over ? '⚠ ' : ''}Test computer: CPU max ${Math.round(m.cpuMax)}%${busy ? `, 90%+ for ${busy}% of the run` : ''} · memory max ${Math.round(m.memoryMax ?? 0)}%${m.netMaxMbps != null ? ` · download max ${m.netMaxMbps} Mbit/s` : ''}${over ? ' — overloaded, timings not reliable' : ''}</div>`;
   }
 
   // "Possible reasons": failures by type, then each finding (click to see reasons and what to check).
@@ -460,6 +549,12 @@
     renderDownloadBar(job);
     $('sites').innerHTML = job.targets.map((t, i) => siteCard(t, i, job)).join('');
     const withStats = job.targets.filter((t) => t.stats);
+    if (job.mode === 'burst') {
+      $('tableCard').hidden = true;
+      $('verdict').hidden = !job.burstComparison;
+      if (job.burstComparison) $('verdict').innerHTML = `<div class="v-text"><b>${esc(job.burstComparison)}</b></div>`;
+      return;
+    }
     $('tableCard').hidden = withStats.length === 0;
     if (job.comparison) renderComparison(job, job.comparison);
     else if (withStats.length) renderSingle(job, withStats[0]);
@@ -503,6 +598,10 @@
     passed: ['Passed',
       'Visits or requests that got the expected HTTP status and finished, out of all you asked for. Ones that failed or hung count as not passed.', null],
     compare: ['Comparison badge', 'How the second URL did against the first for that row: “2.0× slower” means it took twice as long.', null],
+    burstUsers: ['Users at the same moment',
+      'How many separate users open the page at exactly the same moment, each with its own connection, like a spike after a news post. Several numbers (10, 20, 30) test growing bursts; larger ones are skipped once a size fails in most rounds.', null],
+    recovery: ['Recovery check',
+      'After every burst, one visitor-like request every 3 seconds until the site answers again. If it still does not answer after this many seconds, the burst counts as "went down" and the test stops.', null],
     browsers: ['Real browsers (hybrid mode)',
       'Every browser user is a full Chrome page on this computer, so many of them overload it and measure the computer instead of the site. Set a small number (e.g. 3): those real browsers measure the page while the other users load the same page with plain HTTP requests, each about once every 5 seconds like a visitor. That costs this computer almost nothing. Empty = every user is a real browser.',
       'Recommended for more than a few users'],

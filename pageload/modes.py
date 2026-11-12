@@ -211,7 +211,47 @@ class ApiMode(TestMode):
         return variables
 
 
-MODES: dict[str, TestMode] = {mode.name: mode for mode in (BrowserMode(), ApiMode())}
+class BurstMode(ApiMode):
+    """N separate users request the page at the same moment, in rounds (see pageload.burst).
+
+    Each user asks like a browser does (browser headers, compression) and, with
+    ``full_page``, also downloads the page's own scripts, styles and images. No Chrome
+    runs, so the test computer is not the limit.
+    """
+
+    name = "burst"
+    title = "Burst"
+    kind = "burst"
+    noun = "requests"
+    noun_singular = "request"
+    action = "to answer a burst"
+    timings = ApiMode.timings + (
+        Timing("pageMs", "Whole page", "the HTML plus the page's own scripts, styles and images"),
+    )
+    main_metric = "pageMs"
+    limits = Limits(
+        recommended_vus=100, recommended_iterations=3000, max_vus=1000, max_iterations=100_000,
+        load_note="large bursts are heavy traffic for the tested site; make sure it is allowed, "
+                  "especially in production",
+    )
+    default_expect_status = "2xx"
+    overhead_per_visit_s = 30
+
+    def burst_vars(self, config: "RunConfig", url: str, report_dir: Path, users: int) -> dict[str, str]:
+        """k6 variables for one burst of ``users`` simultaneous requests."""
+        variables = self.k6_vars(config, url, report_dir)
+        variables.update({
+            "VUS": str(users),
+            "ITERATIONS": str(users),
+            "BROWSER_HEADERS": "1",
+            "FULL_PAGE": "1" if config.burst and config.burst.full_page else "0",
+            "MAX_DURATION": f"{config.settings.timeout_s * 2 + 30}s",
+            "API_METHOD": "GET",
+        })
+        return variables
+
+
+MODES: dict[str, TestMode] = {mode.name: mode for mode in (BrowserMode(), ApiMode(), BurstMode())}
 
 
 def get_mode(name: str | None) -> TestMode:

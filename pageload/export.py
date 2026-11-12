@@ -67,7 +67,8 @@ def visits_csv(run_dir: Path) -> str:
                + [t.field for t in mode.timings]
                + ["requests", "transferBytes", "durationMs", "passed", "failureType", "error",
                   "documentStatus", "server", "serverAnswer"]
-               + (["method"] if mode.name == "api" else ["failedRequestCount", "screenshot"]))
+               + (["burstUsers", "burstRound", "files", "filesFailed", "pageMs"] if mode.name == "burst"
+                  else ["method"] if mode.name == "api" else ["failedRequestCount", "screenshot"]))
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=columns, extrasaction="ignore", lineterminator="\n")
     writer.writeheader()
@@ -125,6 +126,19 @@ def results_csv(status: dict[str, Any]) -> str:
             else:
                 writer.writerow([row["metric"], row["label"], _csv_value(row["a"]["value"]), _csv_value(row["b"]["value"]),
                                  row["value"]["text"], "", "", ""])
+        return out.getvalue()
+
+    if status.get("mode") == "burst":
+        writer.writerow(["url", "users at once", "round", "result", "got the page", "failed", "first byte p95 ms",
+                         "whole page p95 ms", "slowest ms", "answered again after s", "problems"])
+        for target in status.get("targets", []):
+            for r in ((target.get("stats") or {}).get("burst") or {}).get("rounds") or []:
+                rec = r.get("recovery") or {}
+                writer.writerow([target["url"], r["users"], r["round"], r["label"], r["answered"], r["failed"],
+                                 _csv_value(r.get("first_byte_p95")), _csv_value(r.get("page_p95")),
+                                 _csv_value(r.get("page_max")),
+                                 (rec.get("afterS") or 0) if rec.get("recovered") else "still down",
+                                 "; ".join(f"{k} x{n}" for k, n in (r.get("errors") or {}).items())])
         return out.getvalue()
 
     writer.writerow(["url", "metric", "label", "median ms", "p90 ms", "p95 ms", "average ms", "min ms", "max ms"])
@@ -213,6 +227,11 @@ def summary_html(status: dict[str, Any]) -> str:
     warnings = "".join(f'<div class="warn">⚠ {e(w)}</div>' for w in status.get("warnings") or [])
 
     reasons = "".join(
+        f'<h2 class="reasons">Bursts · {e(host_of(t["url"]))}</h2>' + diagnosis_html.render_burst(t["stats"]["burst"])
+        for t in status.get("targets", []) if (t.get("stats") or {}).get("burst"))
+    if status.get("burstComparison"):
+        verdict = f'<div class="verdict"><b>{e(status["burstComparison"])}</b></div>'
+    reasons += "".join(
         f'<h2 class="reasons">Possible reasons · {e(host_of(t["url"]))}</h2>'
         + diagnosis_html.render(t["stats"]["diagnosis"], noun)
         for t in status.get("targets", [])
@@ -303,7 +322,8 @@ def job_zip(status: dict[str, Any], reports_dir: Path) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("comparison.html" if compare else "summary.html", summary_html(status))
-        archive.writestr("comparison.csv" if compare else "timings.csv", results_csv(status))
+        archive.writestr("bursts.csv" if status.get("mode") == "burst" else "comparison.csv" if compare
+                         else "timings.csv", results_csv(status))
         archive.writestr("result.json", json.dumps(status, indent=2, default=str))
         archive.writestr("problems.csv", problems_csv(
             [(t["url"], (t.get("stats") or {}).get("diagnosis")) for t in status.get("targets", [])]))

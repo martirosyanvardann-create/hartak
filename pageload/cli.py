@@ -61,6 +61,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("compare_url", nargs="?")
     run.add_argument("--vus", type=int, default=5, help="parallel users (default 5)")
     run.add_argument("--visits", type=int, default=30, help="visits/requests per URL (default 30)")
+    run.add_argument("--burst", metavar="USERS",
+                     help="burst test: separate users at the same moment, e.g. 30 or 10,20,30")
+    run.add_argument("--rounds", type=int, help="burst test: rounds per burst size (default 3)")
+    run.add_argument("--pause", type=int, help="burst test: seconds between bursts (default 30)")
+    run.add_argument("--recovery", type=int, help="burst test: seconds to wait for the site to answer again (default 60)")
+    run.add_argument("--html-only", action="store_true", help="burst test: only the HTML, not the page's own files")
     run.add_argument("--browsers", type=int, metavar="N",
                      help="hybrid mode: N real browsers measure, the other users load the page with HTTP requests")
     run.add_argument("--wait-until", choices=WAIT_MODES, default="load")
@@ -105,6 +111,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         config = RunConfig.from_dict({
             "url": args.url, "compareUrl": args.compare_url,
             "vus": args.vus, "iterations": args.visits, "waitUntil": args.wait_until, "browsers": args.browsers,
+            **({"mode": "burst", "burstUsers": args.burst, "rounds": args.rounds, "pauseSec": args.pause,
+                "recoverySec": args.recovery, "fullPage": not args.html_only} if args.burst else {}),
             "apiOnly": args.api, "method": args.method,
             "headers": "\n".join(args.header), "body": args.body,
         })
@@ -167,7 +175,8 @@ def format_result(status: dict[str, Any]) -> str:
         if machine and machine.get("cpuMax") is not None:
             out.append(f"{'':<24} test computer: CPU max {round(machine['cpuMax'])}%, "
                        f"90%+ for {round((machine.get('busyShare') or 0) * 100)}% of the run, "
-                       f"memory max {round(machine.get('memoryMax') or 0)}%")
+                       f"memory max {round(machine.get('memoryMax') or 0)}%"
+                       + (f", download max {machine['netMaxMbps']} Mbit/s" if machine.get("netMaxMbps") is not None else ""))
         if target.get("budget"):
             budget = target["budget"]
             mark = "✓" if budget["passed"] else "✗"
@@ -189,6 +198,21 @@ def format_result(status: dict[str, Any]) -> str:
         out += ["", f"{'Timing':<16}{'median':>10}{'p90':>10}{'p95':>10}{'min':>10}{'max':>10}"]
         for field, label in status["timings"]:
             out.append(f"{label:<16}" + "".join(f"{ms(timings[field][k]):>10}" for k in ("med", "p90", "p95", "min", "max")))
+
+    if status.get("mode") == "burst":
+        out.append("")
+        for target in status["targets"]:
+            burst = (target.get("stats") or {}).get("burst") or {}
+            out.append(f"{host_of(target['url'])}: {burst.get('answer') or target.get('problem') or 'no result'}")
+            for r in burst.get("rounds") or []:
+                rec = r.get("recovery") or {}
+                after = ("answered right away" if rec.get("recovered") and not rec.get("afterS") else
+                         f"answered again after {round(rec['afterS'])} s" if rec.get("recovered") else "still down")
+                out.append(f"  {r['icon']} {r['users']:>4} users · round {r['round']}: {r['answered']}/{r['users']} got the page, "
+                           f"whole page p95 {ms(r.get('page_p95'))}, {after}"
+                           + (f" — {r['problem']}" if r.get("problem") else ""))
+        if status.get("burstComparison"):
+            out += ["", status["burstComparison"]]
 
     for target in status["targets"]:
         diag = (target.get("stats") or {}).get("diagnosis")

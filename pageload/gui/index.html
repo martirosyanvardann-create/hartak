@@ -40,11 +40,49 @@
             <input id="compareUrl" name="compareUrl" type="url" placeholder="https://dev.hartak.am/">
           </div>
         </div>
-        <label class="mode-switch" for="apiOnly">
-          <input id="apiOnly" name="apiOnly" type="checkbox" aria-label="API only: plain HTTP requests, no browser">
-          <span><b>API only</b> — send plain HTTP requests, no browser. Measures how fast the server answers
-            (connect, TLS, TTFB, download), not how the page renders. Lighter, so it can run many more users.</span>
-        </label>
+        <div class="test-type" role="radiogroup" aria-label="Test type">
+          <label class="mode-switch">
+            <input type="radio" name="testType" value="browser" checked>
+            <span><b>Browser</b> — real Chrome visits: how fast the page appears and finishes loading
+              (TTFB, FCP, LCP, fully loaded).</span>
+          </label>
+          <label class="mode-switch">
+            <input type="radio" name="testType" value="api">
+            <span><b>API only</b> — plain HTTP requests, no browser: how fast the server answers
+              (connect, TLS, TTFB, download). Light, so it can run many more users.</span>
+          </label>
+          <label class="mode-switch">
+            <input type="radio" name="testType" value="burst">
+            <span><b>Burst</b> — separate users open the page at the same moment, in rounds:
+              does the site handle the spike, or go down, and does it come back?</span>
+          </label>
+        </div>
+        <div id="burstFields" class="burst-fields" hidden>
+          <div>
+            <label for="burstUsers">Users at the same moment<span class="hint" tabindex="0" role="button" aria-label="What are users at the same moment?" data-hint="burstUsers">i</span></label>
+            <input id="burstUsers" name="burstUsers" type="text" value="10, 20, 30" spellcheck="false" aria-label="Users at the same moment">
+          </div>
+          <div>
+            <label for="rounds">Rounds each</label>
+            <input id="rounds" name="rounds" type="number" min="1" max="10" value="3" aria-label="Rounds">
+          </div>
+          <div>
+            <label for="pauseSec">Pause between (s)</label>
+            <input id="pauseSec" name="pauseSec" type="number" min="5" max="600" value="30" aria-label="Pause between bursts">
+          </div>
+          <div>
+            <label for="recoverySec">Recovery check (s)<span class="hint" tabindex="0" role="button" aria-label="What is the recovery check?" data-hint="recovery">i</span></label>
+            <input id="recoverySec" name="recoverySec" type="number" min="10" max="600" value="60" aria-label="Recovery check">
+          </div>
+          <div>
+            <label for="slowMs">Slow: first byte above (ms)</label>
+            <input id="slowMs" name="slowMs" type="number" min="100" max="120000" value="3000" aria-label="Slow: first byte above">
+          </div>
+          <label class="check-row full-page">
+            <input id="fullPage" name="fullPage" type="checkbox" checked>
+            <span>Whole page: also download the page's own scripts, styles and images, like a browser</span>
+          </label>
+        </div>
         <div id="apiFields" class="api-fields" hidden>
           <div>
             <label for="method">Method</label>
@@ -63,7 +101,7 @@
           </div>
         </div>
         <div class="nums">
-          <div>
+          <div id="vusField">
             <label for="vus">Parallel users (VUs)</label>
             <input id="vus" name="vus" type="number" min="1" max="20" value="5" required>
           </div>
@@ -71,7 +109,7 @@
             <label for="browsers">Real browsers<span class="hint" tabindex="0" role="button" aria-label="What are real browsers?" data-hint="browsers">i</span></label>
             <input id="browsers" name="browsers" type="number" min="1" placeholder="all users">
           </div>
-          <div>
+          <div id="iterationsField">
             <label for="iterations" id="iterationsLabel">Total visits per URL</label>
             <input id="iterations" name="iterations" type="number" min="1" max="1000" value="30" required>
           </div>

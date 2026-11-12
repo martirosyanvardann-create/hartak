@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import html
+import json
 import sys
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def build_report(run_dir: Path) -> Path:
     visits, summary = data.visits, data.summary
     load = background_load(run_dir)
     mode = get_mode(summary.get("mode"))
-    api = mode.name == "api"
+    api = mode.name in ("api", "burst")      # no browser: no viewport, no page requests card
     e = html.escape
     main, main_label, noun = mode.main_metric, mode.main_label, mode.noun
 
@@ -65,6 +66,7 @@ def build_report(run_dir: Path) -> Path:
         f'time limit) and are not in these results.</div>' if missing else ""
     )
     mode_meta = (
+        '<span>Mode <b>Burst: separate users at the same moment (no browser)</b></span>' if mode.name == "burst" else
         f'<span>Mode <b>API · {e(str(summary.get("method") or "GET"))} (no browser)</b></span>' if api else
         f'<span>Wait until <b>{e(str(summary.get("waitUntil") or "—"))}</b></span>'
         + (f'<span>Hybrid <b>{summary.get("vus")} browsers + {load["users"]} HTTP load users</b></span>'
@@ -76,13 +78,21 @@ def build_report(run_dir: Path) -> Path:
         f'<div class="value">{round(percentile(requests, 50)) if requests else "—"}</div></div>'
     )
 
-    diag = diagnosis.diagnose(visits, summary, mode=mode, other_lines=data.other_lines, machine=data.machine,
-                              load=load)
-    diag_section = diagnosis_html.render(diag, noun)
+    burst_file = run_dir / "burst.json"
+    if mode.name == "burst" and burst_file.exists():
+        # Rounds with pauses in between: the burst table says more than a run-wide diagnosis.
+        diag_section = (diagnosis_html.render_burst(json.loads(burst_file.read_text(encoding="utf-8")))
+                        + f'<section class="dx">{diagnosis_html.machine_section(data.machine)}</section>')
+    else:
+        diag = diagnosis.diagnose(visits, summary, mode=mode, other_lines=data.other_lines, machine=data.machine,
+                                  load=load)
+        diag_section = diagnosis_html.render(diag, noun)
 
+    titles = {"api": "API Response Report", "burst": "Burst Test Report"}
     page = _TEMPLATE.format(
         diagnosis=diag_section,
-        title="API Response Report" if api else "Page Load Report",
+        reasons_title="Bursts" if mode.name == "burst" else "Possible reasons",
+        title=titles.get(mode.name, "Page Load Report"),
         result_color="var(--ok)" if all_ok else "var(--bad)",
         url=e(url), run=e(run_dir.name), started=e(started),
         profile=e(str(summary.get("profile") or "—")), mode_meta=mode_meta,
@@ -224,7 +234,7 @@ td.note a {{ color: var(--accent); }}
 
   {missing_note}
 
-  <h2 id="reasons">Possible reasons</h2>
+  <h2 id="reasons">{reasons_title}</h2>
   {diagnosis}
 
   <h2>Timings</h2>

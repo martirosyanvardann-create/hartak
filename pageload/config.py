@@ -162,6 +162,72 @@ class ApiRequest:
 
 
 @dataclass(frozen=True)
+class BurstPlan:
+    """Burst test: N separate users open the page at the same moment, repeated in rounds.
+
+    Each step (number of users) runs ``rounds`` times with a pause in between. Before
+    the first burst the site is checked once; after every burst it is watched for up
+    to ``recovery_s`` seconds to see whether it still answers ("did it die?").
+    """
+
+    steps: tuple[int, ...] = (30,)
+    rounds: int = 3
+    pause_s: int = 30
+    recovery_s: int = 60
+    slow_ms: int = 3000          # a burst whose first-byte p95 (server time) is above this counts as slow
+    full_page: bool = True       # also download the page's own scripts, styles and images
+
+    MAX_USERS = 1000
+    MAX_STEPS = 10
+    NUMBERS = (
+        ("rounds", "rounds", "Rounds", 1, 10),
+        ("pause_s", "pauseSec", "Pause between bursts", 5, 600),
+        ("recovery_s", "recoverySec", "Recovery check", 10, 600),
+        ("slow_ms", "slowMs", "Slow above", 100, 120000),
+    )
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "BurstPlan":
+        errors: list[str] = []
+        defaults = cls()
+        steps = cls._parse_steps(raw.get("burstUsers"), errors) or defaults.steps
+        values = {attr: _int_in_range(raw, key, label, low, high, getattr(defaults, attr), errors)
+                  for attr, key, label, low, high in cls.NUMBERS}
+        full_page = raw["fullPage"] is True if "fullPage" in raw else defaults.full_page
+        if errors:
+            raise ValidationError(errors)
+        return cls(steps=steps, full_page=full_page, **values)
+
+    @classmethod
+    def _parse_steps(cls, value: Any, errors: list[str]) -> tuple[int, ...]:
+        if value in (None, ""):
+            return ()
+        parts = value if isinstance(value, (list, tuple)) else re.split(r"[\s,;]+", str(value).strip())
+        try:
+            steps = tuple(int(p) for p in parts if str(p).strip())
+        except (TypeError, ValueError):
+            errors.append("Users per burst must be numbers like 30 or 10, 20, 30.")
+            return ()
+        if not steps or len(steps) > cls.MAX_STEPS or not all(1 <= s <= cls.MAX_USERS for s in steps):
+            errors.append(f"Users per burst: 1 to {cls.MAX_STEPS} numbers, each 1–{cls.MAX_USERS} (e.g. 10, 20, 30).")
+            return ()
+        return tuple(sorted(set(steps)))
+
+    @property
+    def total_requests(self) -> int:
+        return sum(self.steps) * self.rounds
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"burstUsers": list(self.steps), "fullPage": self.full_page,
+                **{key: getattr(self, attr) for attr, key, *_ in self.NUMBERS}}
+
+    @classmethod
+    def describe(cls) -> dict[str, Any]:
+        return {"defaults": cls().to_dict(), "ranges": {key: [low, high] for _, key, _, low, high in cls.NUMBERS},
+                "maxUsers": cls.MAX_USERS}
+
+
+@dataclass(frozen=True)
 class RunConfig:
     """One run: one URL, or two to compare, with the same users and visits."""
 
@@ -172,6 +238,7 @@ class RunConfig:
     # Browser mode only. None: every user is a real browser. Fewer than vus: hybrid mode,
     # ``browsers`` real browsers measure while the other users create load with HTTP requests.
     browsers: int | None = None
+    burst: BurstPlan | None = None      # burst mode only
     wait_until: str = "load"
     request: ApiRequest = field(default_factory=ApiRequest)
     settings: Settings = field(default_factory=Settings)
@@ -197,8 +264,11 @@ class RunConfig:
         if not isinstance(raw, Mapping):
             raise ValidationError(["Invalid request."])
         errors: list[str] = []
-        mode_name = "api" if raw.get("apiOnly") is True or raw.get("mode") == "api" else "browser"
+        mode_name = ("burst" if raw.get("mode") == "burst"
+                     else "api" if raw.get("apiOnly") is True or raw.get("mode") == "api" else "browser")
         mode = MODES[mode_name]
+        if mode_name == "burst":
+            return cls._burst_from_dict(raw, mode, errors)
 
         urls: list[str] = []
         for key in ("url", "compareUrl"):
@@ -242,10 +312,39 @@ class RunConfig:
         return cls(urls=tuple(urls), vus=vus, iterations=iterations, mode_name=mode_name,
                    browsers=browsers, wait_until=wait_until, request=request, settings=settings)
 
+    @classmethod
+    def _burst_from_dict(cls, raw: Mapping[str, Any], mode: TestMode, errors: list[str]) -> "RunConfig":
+        urls = cls._urls(raw, errors)
+        plan = _collect(errors, BurstPlan.from_dict, raw) or BurstPlan()
+        request = _collect(errors, ApiRequest.from_dict, {"headers": raw.get("headers")}) or ApiRequest()
+        settings = _collect(errors, Settings.from_dict, raw.get("settings")) or Settings()
+        if errors:
+            raise ValidationError(errors)
+        return cls(urls=tuple(urls), vus=max(plan.steps), iterations=plan.total_requests, mode_name="burst",
+                   request=request, settings=settings, burst=plan)
+
+    @staticmethod
+    def _urls(raw: Mapping[str, Any], errors: list[str]) -> list[str]:
+        urls: list[str] = []
+        for key in ("url", "compareUrl"):
+            value = str(raw.get(key) or "").strip()
+            if not value:
+                if key == "url":
+                    errors.append("URL is required.")
+                continue
+            if not _URL.match(value):
+                errors.append(f"{value!r} is not an http(s) URL.")
+            urls.append(value)
+        return urls
+
     def warnings(self) -> list[str]:
         """Allowed but risky choices: above the recommended users or visits."""
         limits, noun = self.mode.limits, self.mode.noun
         notes = []
+        if self.burst:
+            if max(self.burst.steps) > limits.recommended_vus:
+                notes.append(f"Bursts of up to {max(self.burst.steps)} users: {limits.load_note}.")
+            return notes
         if self.mode.needs_browser:
             if self.measuring_users > limits.recommended_vus:
                 notes.append(f"{self.measuring_users} browser users is more than the recommended "
@@ -281,6 +380,7 @@ class RunConfig:
             "mode": self.mode_name,
             "waitUntil": self.wait_until,
             "request": asdict(self.request) if self.mode_name == "api" else None,
+            "burst": self.burst.to_dict() if self.burst else None,
             "settings": self.settings.to_dict(),
             "warnings": self.warnings(),
         }

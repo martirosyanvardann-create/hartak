@@ -33,7 +33,7 @@ from urllib.parse import unquote, urlparse
 
 from . import __version__, export
 from .chrome import find_chrome
-from .config import HTTP_METHODS, WAIT_MODES, RunConfig, Settings, ValidationError
+from .config import BurstPlan, HTTP_METHODS, WAIT_MODES, RunConfig, Settings, ValidationError
 from .job import Job
 from .k6 import find_k6
 from .machine import capacity
@@ -85,6 +85,7 @@ def config_payload() -> dict[str, Any]:
         "waitModes": list(WAIT_MODES),
         "methods": list(HTTP_METHODS),
         "machine": capacity().to_dict(),
+        "burst": BurstPlan.describe(),
     }
 
 
@@ -103,6 +104,13 @@ API_HELP = {
                 "iterations": "visits/requests per URL, >= vus. Above 1000 / 10000 returns a warning",
                 "waitUntil": "load (default) or networkidle  (browser mode)",
                 "apiOnly": "true = HTTP/API test: plain requests, no browser",
+                "mode": "browser (default), api, or burst: separate users at the same moment, in rounds",
+                "burstUsers": "burst mode: users per burst, e.g. \"10, 20, 30\" (default 30)",
+                "rounds": "burst mode: rounds per burst size, 1-10 (default 3)",
+                "pauseSec": "burst mode: pause between bursts, 5-600 s (default 30)",
+                "recoverySec": "burst mode: how long to wait for the site to answer again, 10-600 s (default 60)",
+                "slowMs": "burst mode: a burst whose first-byte p95 (server time) is above this counts as slow (default 3000)",
+                "fullPage": "burst mode: also download the page's own scripts, styles and images (default true)",
                 "method": "GET (default), POST, PUT, PATCH, DELETE, HEAD, OPTIONS  (API mode)",
                 "headers": "{\"Name\": \"value\"} or \"Name: value\" lines  (API mode)",
                 "body": "request body text  (API mode)",

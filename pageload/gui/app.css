@@ -277,3 +277,17 @@ th .hint { vertical-align: -3px; }
 .btn-hybrid { margin-top: 2px; padding: 6px 12px; border-radius: 8px; border: 1px solid currentColor;
   background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
 .btn-hybrid:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+
+/* Test type and burst fields */
+.test-type { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 760px) { .test-type { grid-template-columns: 1fr; } }
+.burst-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.burst-fields > div { flex: 1 1 140px; min-width: 0; }
+.burst-fields > .full-page { flex: 1 1 100%; height: auto; color: var(--muted); }
+.burst-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.burst-table th, .burst-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.burst-table td.n, .burst-table th.n { text-align: right; }
+.burst-table td.wrap { white-space: normal; color: var(--bad); min-width: 160px; }
+.burst-answer { font-weight: 650; margin: 4px 0 6px; }
+.burst-answer.bad { color: var(--bad); } .burst-answer.good { color: var(--good); }
+.table-scroll { overflow-x: auto; }

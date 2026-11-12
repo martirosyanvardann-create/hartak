@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager, Protocol
 
 from . import analysis, diagnosis
+from .burst import LABELS, Watcher, check_url, plan_result, round_result
 from .chrome import SharedChrome
 from .config import RunConfig
 from .formatting import host_of
@@ -35,6 +36,7 @@ from .report import build_report
 from .results import LOAD_DIR, MACHINE_JSON, REPORT_HTML, count_visits, load_run
 
 LOG_LINES = 200
+DOWN_WATCH_S = 300          # burst mode: after the site went down, watch up to 5 more minutes
 LOAD_WARMUP_S = 5           # load runs this long before the browsers start measuring
 RESULT_SUFFIX = ".json"     # reports/<job id>.json: the saved result of a finished run
 log = logging.getLogger("pageload.job")
@@ -69,6 +71,7 @@ class Target:
     run_dir: Path
     problem: str | None = None
     finished: bool = False
+    burst: dict[str, Any] | None = None    # burst mode: check before, rounds and the answer
     stats: dict[str, Any] | None = None    # computed once, after the URL finished
 
 
@@ -109,6 +112,8 @@ class Job:
                  report_builder: Callable[[Path], Path] = build_report,
                  monitor_factory: Callable[[], Any] = MachineMonitor,
                  load_warmup_s: float = LOAD_WARMUP_S,
+                 url_check: Callable[..., tuple] = check_url,
+                 sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.time):
         self.config = config
         self.mode = config.mode
@@ -117,6 +122,8 @@ class Job:
         self._report_builder = report_builder
         self._monitor_factory = monitor_factory
         self._load_warmup_s = load_warmup_s
+        self._url_check = url_check
+        self._sleep = sleep
         self._clock = clock
         self._lock = threading.Lock()
         self._runner: Runner | None = None
@@ -199,6 +206,9 @@ class Job:
 
     def _run_target(self, target: Target, runner_factory: Callable[[], Runner]) -> None:
         config, mode = self.config, self.mode
+        if config.burst:
+            self._run_burst(target, runner_factory)
+            return
         runner = runner_factory()
         limit = config.time_limit_s()
         browser = self._browser_factory() if mode.needs_browser else contextlib.nullcontext()
@@ -234,6 +244,99 @@ class Job:
         target.finished = True
         if not self._stop_requested:
             target.problem = diagnose(count_visits(target.run_dir), config.iterations, mode.noun, result, limit)
+
+    # -- burst mode --------------------------------------------------------------------
+    def _run_burst(self, target: Target, runner_factory: Callable[[], Runner]) -> None:
+        """Check before, then every step × round: burst, recovery check, pause."""
+        config, mode, plan = self.config, self.mode, self.config.burst
+        run_dir = target.run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        watcher = Watcher(target.url, timeout_s=config.settings.timeout_s, check=self._url_check,
+                          sleep=self._sleep, clock=self._clock, stopped=lambda: self._stop_requested)
+        rounds: list = []
+        stopped_early = None
+        started = self._clock()
+        monitor = self._monitor_factory()
+        with monitor:
+            before = watcher.once()
+            target.burst = {"before": before.__dict__, "rounds": []}
+            self._add_log(f"Check before the test: {'answers' if before.ok else 'NOT answering'} "
+                          f"({before.status or before.error}, {before.ms:.0f} ms)")
+            if not before.ok:
+                target.problem = (f"The site was not answering before the test ({before.error or before.status}), "
+                                  "so no burst was sent.")
+            for users in plan.steps if before.ok else ():
+                for number in range(1, plan.rounds + 1):
+                    if rounds and not self._wait(plan.pause_s):
+                        break
+                    burst_dir = run_dir / "bursts" / f"{users:04d}-users-round-{number}"
+                    self._add_log(f"Burst: {users} users at the same moment (round {number} of {plan.rounds})")
+                    runner = runner_factory()
+                    self._runner = runner
+                    runner.run(mode.script, mode.burst_vars(config, target.url, burst_dir, users), burst_dir,
+                               watchdog_s=config.settings.timeout_s * 2 + 90, on_line=self._add_log)
+                    self._runner = None
+                    if self._stop_requested:
+                        break
+                    visits = load_run(burst_dir).visits
+                    recovery = watcher.recovery(plan.recovery_s)
+                    result = round_result(visits, users, number, recovery, plan.slow_ms)
+                    rounds.append(result)
+                    target.burst["rounds"] = [r.to_dict() for r in rounds]
+                    self._append_burst_visits(run_dir, visits, users, number)
+                    self._add_log(f"  → {LABELS[result.verdict]}: {result.answered} of {users} answered"
+                                  + (f", {result.problem}" if result.problem else ""))
+                    if result.verdict == "down":
+                        # Keep watching (lightly) to learn how long the site was down.
+                        self._add_log(f"  The site is not answering: watching for up to {DOWN_WATCH_S // 60} more minutes")
+                        later = watcher.recovery(DOWN_WATCH_S)
+                        if later["recovered"]:
+                            result.recovery["cameBackAfterS"] = round(plan.recovery_s + (later["afterS"] or 0))
+                        result.recovery["laterChecks"] = len(later["checks"])
+                        target.burst["rounds"] = [r.to_dict() for r in rounds]
+                        stopped_early = "The test stopped there."
+                        break
+                if stopped_early or self._stop_requested:
+                    break
+                mine = [r for r in rounds if r.users == users]
+                if users != plan.steps[-1] and sum(r.verdict in ("failing", "down") for r in mine) * 2 > len(mine):
+                    stopped_early = f"Larger bursts were skipped because {users} users already failed in most rounds."
+                    break
+
+        target.burst.update(plan_result(rounds, plan.steps, plan.rounds, target.burst["before"], stopped_early),
+                            plan=plan.to_dict())
+        (run_dir / "burst.json").write_text(json.dumps(target.burst, indent=2, default=str), encoding="utf-8")
+        (run_dir / "summary.json").write_text(json.dumps({
+            "mode": "burst", "url": target.url, "profile": "burst",
+            "expectedVisits": sum(r.users for r in rounds), "vus": max(plan.steps),
+            "timeoutMs": config.settings.timeout_s * 1000,
+            "totalRuntimeMs": (self._clock() - started) * 1000}), encoding="utf-8")
+        if not (run_dir / "console.log").exists():
+            (run_dir / "console.log").write_text("", encoding="utf-8")
+        self._save_machine(run_dir, monitor)
+        self._report_builder(run_dir)
+        target.finished = True
+        if not target.problem and any(r.verdict == "down" for r in rounds):
+            target.problem = "The site went down during a burst and did not come back within the recovery check."
+
+    def _wait(self, seconds: float) -> bool:
+        """Pause between bursts; False if the run was stopped meanwhile."""
+        end = self._clock() + seconds
+        while self._clock() < end:
+            if self._stop_requested:
+                return False
+            self._sleep(min(1.0, max(0.0, end - self._clock())))
+        return not self._stop_requested
+
+    @staticmethod
+    def _append_burst_visits(run_dir: Path, visits: list[dict], users: int, number: int) -> None:
+        """Collect every burst's requests in the run folder's console.log (for the report and downloads)."""
+        console = run_dir / "console.log"
+        existing = count_visits(run_dir)
+        with console.open("a", encoding="utf-8") as handle:
+            for i, visit in enumerate(visits, start=1):
+                record = {**visit, "visit": existing + i, "burstUsers": users, "burstRound": number}
+                handle.write(f"VISIT {json.dumps(record)}\n")
 
     def _start_load(self, target: Target, runner_factory: Callable[[], Runner]) -> tuple:
         """Hybrid mode: start the HTTP load users and let them run for a few seconds."""
@@ -283,7 +386,11 @@ class Job:
 
     # -- reporting -----------------------------------------------------------------
     def progress(self, index: int) -> int:
-        return count_visits(self.targets[index].run_dir)
+        run_dir = self.targets[index].run_dir
+        if self.config.burst:
+            bursts = run_dir / "bursts"
+            return sum(count_visits(d) for d in bursts.iterdir()) if bursts.is_dir() else 0
+        return count_visits(run_dir)
 
     def _phase(self, index: int, target: Target, done: int) -> str:
         if target.finished and target.problem:
@@ -294,6 +401,20 @@ class Job:
             return "running" if index == self.current else "waiting"
         return self.state.value
 
+    def _burst_stats(self, target: Target) -> dict[str, Any]:
+        data = load_run(target.run_dir)
+        stats = analysis.target_stats(data.visits, data.summary, self.mode)
+        stats["burst"] = target.burst
+        stats["diagnosis"] = None
+        stats["load"] = None
+        stats["machine"] = {k: v for k, v in (data.machine or {}).items() if k != "samples"} or None
+        report = target.run_dir / REPORT_HTML
+        stats["report"] = f"/reports/{target.run_dir.name}/{REPORT_HTML}" if report.exists() else None
+        stats["reportPath"] = str(report) if report.exists() else None
+        stats["download"] = f"/api/runs/{target.run_dir.name}/download"
+        target.stats = stats
+        return stats
+
     def status(self) -> dict[str, Any]:
         """Everything the GUI, the API and the command line show about this run."""
         config, mode = self.config, self.mode
@@ -301,7 +422,9 @@ class Job:
         for index, target in enumerate(self.targets):
             done = self.progress(index)
             stats = target.stats
-            if stats is None and target.finished and done > 0:
+            if stats is None and target.finished and config.burst:
+                stats = self._burst_stats(target)
+            elif stats is None and target.finished and done > 0:
                 data = load_run(target.run_dir)
                 stats = analysis.target_stats(data.visits, data.summary, mode)
                 load_visits = load_run(target.run_dir / LOAD_DIR).visits if config.load_users else []
@@ -328,14 +451,21 @@ class Job:
             })
 
         comparison = None
-        if len(targets) == 2 and all(t["stats"] for t in targets):
+        if config.burst:
+            pass    # bursts are compared by how many users each site handled (burstComparison)
+        elif len(targets) == 2 and all(t["stats"] for t in targets):
             comparison = analysis.compare(targets[0]["url"], targets[0]["stats"],
                                           targets[1]["url"], targets[1]["stats"], mode)
-        ok = self.state is JobState.DONE and all(
-            t["stats"] and t["stats"]["passed"] == config.iterations
-            and (t["budget"] is None or t["budget"]["passed"])
-            for t in targets
-        )
+        if config.burst:
+            ok = self.state is JobState.DONE and all(
+                t["stats"] and t["stats"]["burst"]["rounds"]
+                and all(r["verdict"] == "ok" for r in t["stats"]["burst"]["rounds"]) for t in targets)
+        else:
+            ok = self.state is JobState.DONE and all(
+                t["stats"] and t["stats"]["passed"] == config.iterations
+                and (t["budget"] is None or t["budget"]["passed"])
+                for t in targets
+            )
         return {
             "id": self.id,
             "download": None if self.is_running else f"/api/jobs/{self.id}/download",
@@ -358,5 +488,22 @@ class Job:
             "elapsedMs": ((self.finished or self._clock()) - self.started) * 1000,
             "targets": targets,
             "comparison": comparison,
+            "burst": config.burst.to_dict() if config.burst else None,
+            "burstComparison": _burst_comparison(targets) if config.burst else None,
             "log": self.log[-40:],
         }
+
+
+def _burst_comparison(targets: list[dict[str, Any]]) -> str | None:
+    """One sentence comparing how many simultaneous users each site handled."""
+    results = [(host_of(t["url"]), (t.get("stats") or {}).get("burst") or {}) for t in targets]
+    if len(results) != 2 or not all(r.get("steps") for _, r in results):
+        return None
+    (a, ra), (b, rb) = results
+    ha, hb = ra.get("handledUsers") or 0, rb.get("handledUsers") or 0
+    if ha == hb:
+        return f"{a} and {b} handled the same bursts: up to {ha} users at once." if ha else \
+            f"Neither {a} nor {b} handled every round of the smallest burst."
+    better, worse = ((a, ha), (b, hb)) if ha > hb else ((b, hb), (a, ha))
+    return (f"{better[0]} handled bursts of up to {better[1]} users at once; "
+            + (f"{worse[0]} only up to {worse[1]}." if worse[1] else f"{worse[0]} not even the smallest burst."))

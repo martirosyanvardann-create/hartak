@@ -74,5 +74,47 @@ class MachineTest(unittest.TestCase):
         self.assertEqual(result["headline"], "The HTML arrived, but the test computer could not finish the pages in time")
 
 
+    def test_network_ceiling_in_summary(self):
+        cap = Capacity(cores=4, memory_bytes=8 * GB)
+        flat = summarize([(i, 20.0, 50.0, 22.0 if 2 <= i <= 18 else 3.0) for i in range(20)], cap)
+        self.assertEqual((flat["netMaxMbps"], flat["netNearMaxShare"]), (22.0, 0.85))
+        old = summarize([(i, 20.0, 50.0) for i in range(5)], cap)            # samples without network
+        self.assertIsNone(old["netMaxMbps"])
+
+    def test_monitor_measures_download_speed(self):
+        class Counting(FakeSampler):
+            total = 0
+
+            def received_bytes(self):
+                Counting.total += 125_000          # 1 Mbit per sample
+                return Counting.total
+
+        with MachineMonitor(interval_s=0.02, sampler_factory=Counting) as monitor:
+            time.sleep(0.15)
+        self.assertGreater(monitor.summary()["netMaxMbps"], 1)
+
+    def network_run(self, receive_ms, flat_share):
+        visits = [visit(i, ttfbMs=600, receiveMs=receive_ms, totalMs=600 + receive_ms,
+                        transferBytes=1_811_383) for i in range(15)]
+        visits += [visit(100 + i, passed=False, error="request: request timeout") for i in range(15)]
+        samples = [(i, 15.0, 50.0, 24.0 if i < flat_share * 30 else 2.0) for i in range(30)]
+        busy = summarize(samples, Capacity(cores=10, memory_bytes=8 * GB))
+        return diagnose(visits, mode=get_mode("api"), vus=30, machine=busy)
+
+    def test_connection_limit_found(self):
+        """The dev.hartak.am burst on a phone hotspot: fast first byte, slow 1.8 MB downloads, flat speed."""
+        result = self.network_run(receive_ms=17000, flat_share=0.8)
+        finding = next(f for f in result["findings"] if "internet connection" in f["title"])
+        self.assertEqual((finding["side"], finding["level"]), ("test computer", "critical"))
+        self.assertIn("about 24 Mbit/s", finding["title"])
+        self.assertIn("first byte median 600 ms", finding["detail"])
+
+    def test_no_connection_limit_without_a_ceiling_or_slow_downloads(self):
+        for receive, flat in ((17000, 0.1), (300, 0.8)):
+            with self.subTest(receive=receive, flat=flat):
+                titles = [f["title"] for f in self.network_run(receive, flat)["findings"]]
+                self.assertFalse(any("internet connection" in t for t in titles))
+
+
 if __name__ == "__main__":
     unittest.main()

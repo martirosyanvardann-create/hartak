@@ -1,5 +1,9 @@
 """The test computer itself: its capacity and how loaded it was during a run.
 
+Besides CPU and memory, the monitor records how fast this computer downloads
+(Mbit/s). When the site sends large pages, the test computer's own connection
+(e.g. a phone hotspot) can be the limit instead of the server.
+
 In browser mode every user is a real Chrome page on *this* computer. When the
 computer runs out of CPU or memory, pages time out or get slow although the
 site is fine. So every run records CPU and memory once a second
@@ -25,6 +29,7 @@ from typing import Any, Callable
 CPU_BUSY = 90.0          # % of all cores: the computer is saturated
 MEMORY_FULL = 95.0       # % of memory in use (macOS keeps ~75% in use even when idle)
 GB = 1024 ** 3
+NET_NEAR_MAX = 0.75      # samples at 75 %+ of the highest download speed count as "at the ceiling"
 CHROME_PAGE_GB = 0.35    # memory one browser user needs for a typical page
 BROWSER_MAX_RECOMMENDED = 20
 
@@ -133,6 +138,16 @@ class _LinuxSampler:
         return max(0.0, min(100.0, 100.0 * (total - idle) / total))
 
     @staticmethod
+    def received_bytes() -> int | None:
+        """Bytes received on all network interfaces except loopback (in Docker: this container)."""
+        total = 0
+        for line in (_read("/proc/net/dev") or "").splitlines()[2:]:
+            name, _, data = line.partition(":")
+            if name.strip() != "lo" and data.split():
+                total += int(data.split()[0])
+        return total or None
+
+    @staticmethod
     def memory() -> float | None:
         limit = _cgroup_memory_limit()
         current = _read("/sys/fs/cgroup/memory.current")
@@ -148,6 +163,30 @@ class _MacSampler:
     def __init__(self) -> None:
         self.cores = os.cpu_count() or 1
         self.total = int(_sysctl("hw.memsize") or 0)
+        self.interface = self._default_interface()
+
+    @staticmethod
+    def _default_interface() -> str | None:
+        """The interface internet traffic leaves through (counting others would double-count Docker's)."""
+        try:
+            out = subprocess.run(["route", "-n", "get", "default"], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        match = re.search(r"interface:\s*(\S+)", out)
+        return match[1] if match else None
+
+    def received_bytes(self) -> int | None:
+        if not self.interface:
+            return None
+        try:
+            out = subprocess.run(["netstat", "-ibn", "-I", self.interface], capture_output=True, text=True,
+                                 timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        for line in out.splitlines():
+            if "<Link#" in line:
+                return int(line.split()[-5])       # columns end with: Ibytes Opkts Oerrs Obytes Coll
+        return None
 
     def cpu(self) -> float | None:
         try:
@@ -187,7 +226,8 @@ class MachineMonitor:
         self._clock = clock
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self.samples: list[tuple[float, float | None, float | None]] = []   # (seconds, cpu %, memory %)
+        # (seconds, cpu %, memory %, download Mbit/s)
+        self.samples: list[tuple[float, float | None, float | None, float | None]] = []
 
     def __enter__(self) -> "MachineMonitor":
         self.start()
@@ -199,11 +239,18 @@ class MachineMonitor:
     def start(self) -> None:
         sampler = self._sampler_factory()
         started = self._clock()
+        received = getattr(sampler, "received_bytes", lambda: None)
 
         def loop() -> None:
+            last_bytes, last_time = received(), self._clock()
             while not self._stop.wait(self.interval_s):
                 try:
-                    self.samples.append((round(self._clock() - started, 1), sampler.cpu(), sampler.memory()))
+                    now, now_bytes = self._clock(), received()
+                    mbps = None
+                    if now_bytes is not None and last_bytes is not None and now > last_time:
+                        mbps = max(0, now_bytes - last_bytes) * 8 / 1_000_000 / (now - last_time)
+                    last_bytes, last_time = now_bytes, now
+                    self.samples.append((round(now - started, 1), sampler.cpu(), sampler.memory(), mbps))
                 except Exception:  # noqa: BLE001 - monitoring must never break a run
                     pass
 
@@ -219,10 +266,13 @@ class MachineMonitor:
         return summarize(self.samples, capacity())
 
 
-def summarize(samples: list[tuple[float, float | None, float | None]], cap: Capacity) -> dict[str, Any]:
-    cpu = [c for _, c, _ in samples if c is not None]
-    memory = [m for _, _, m in samples if m is not None]
+def summarize(samples: list[tuple], cap: Capacity) -> dict[str, Any]:
+    samples = [tuple(s) + (None,) * (4 - len(s)) for s in samples]     # older samples had no network
+    cpu = [s[1] for s in samples if s[1] is not None]
+    memory = [s[2] for s in samples if s[2] is not None]
+    net = [s[3] for s in samples if s[3] is not None]
     ordered = sorted(cpu)
+    peak = max(net) if net else None
     return {
         **cap.to_dict(),
         "recommendedBrowsers": recommended_browsers(cap),
@@ -230,8 +280,16 @@ def summarize(samples: list[tuple[float, float | None, float | None]], cap: Capa
         "cpuP90": round(ordered[int(0.9 * (len(ordered) - 1))], 1) if cpu else None,
         "busyShare": round(sum(1 for c in cpu if c >= CPU_BUSY) / len(cpu), 2) if cpu else None,
         "memoryMax": round(max(memory), 1) if memory else None,
-        "samples": [[t, None if c is None else round(c), None if m is None else round(m)] for t, c, m in samples],
+        "netMaxMbps": round(peak, 1) if peak is not None else None,
+        "netAvgMbps": round(sum(net) / len(net), 1) if net else None,
+        # Share of the run spent close to the highest download speed: a flat top means a ceiling.
+        "netNearMaxShare": round(sum(1 for n in net if n >= NET_NEAR_MAX * peak) / len(net), 2) if peak else None,
+        "samples": [[t, _round(c), _round(m), _round(n, 1)] for t, c, m, n in samples],
     }
+
+
+def _round(value: float | None, digits: int = 0) -> float | None:
+    return None if value is None else round(value, digits) if digits else round(value)
 
 
 def overloaded(machine: dict[str, Any] | None) -> bool:

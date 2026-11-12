@@ -12,12 +12,41 @@ compared fairly.
 | **Browser** (default) | a real headless Chrome per visit | TTFB, FCP, LCP, DOM loaded, load, fully loaded | depends on this computer (about 1 per CPU core, max 20) / 1000 | 200 / 100 000 |
 | **Hybrid** (browser mode + *Real browsers*) | a few real Chromes measure while the other users load the page with HTTP requests | same as browser, plus the background load | many users: only the real browsers cost CPU | 200 / 100 000 |
 | **API only** | plain HTTP requests, no browser | connect, TLS, TTFB, receive, total | 200 / 10 000 | 5000 / 1 000 000 |
+| **Burst** | N separate users open the page at the same moment, in rounds; checks before and after | handled / slow / failing / went down, recovery time | bursts up to 100 users | 1000 users per burst |
 
 Above the recommended numbers a run still starts, with a warning (in the form, the
 results, the CLI and the API answer): in browser mode every user is a real Chrome
 page, so too many users measure this computer's load as much as the site; in API
 mode many users mean heavy traffic for the tested site. The maximums only stop
 obvious typos.
+
+## Burst test: will the site survive a spike?
+
+"What happens if 30 people open the page at the same moment?" — choose **Burst**,
+enter e.g. `10, 20, 30` users and the number of rounds.
+
+* **Check before:** one visitor-like request. If the site is already down, no burst is
+  sent and the result says so (instead of blaming the load).
+* **Each burst:** N separate users (each with its own connection) request the page at
+  the same moment, like a browser asks (browser headers, compression). With **Whole
+  page** each user also downloads the page's own scripts, styles and images. No Chrome
+  runs, so the test computer is not the limit.
+* **After each burst:** one request every 3 s until the site answers again (up to the
+  *recovery check*, default 60 s). If it does not, the burst counts as **went down**,
+  no larger bursts are sent, and the tool keeps watching lightly for up to 5 minutes
+  to report how long the site was down.
+* **Result per burst:** ✅ handled · ⚠️ slow (server's first byte p95 above the limit) ·
+  ❌ failing (errors) · 💀 went down — and one sentence, e.g. *"Went down at 30 users at
+  the same moment. 10 users at once: 2 slow … 30 users at once: 1 went down; the site
+  stopped answering and came back after 2 min 10 s."* Larger bursts are skipped once a
+  size fails in most rounds.
+
+```bash
+python3 app.py run https://dev.hartak.am/ --burst 10,20,30 --rounds 3 --pause 30
+```
+
+Use it on test environments; on production only with the team's OK, since it pushes
+until something breaks.
 
 ## Many users: hybrid mode
 
@@ -37,8 +66,11 @@ The recommended number of browser users is calculated from this computer's cores
 and memory (`PAGELOAD_RECOMMENDED_BROWSERS` overrides it); above it the form shows a
 warning with a one-click switch to hybrid mode.
 
-Every run also records **the test computer's own CPU and memory**
-(`machine.json`). If it was overloaded, the result says so first: *"The test
+Every run also records **the test computer's own CPU, memory and download speed**
+(`machine.json`). When answers start quickly but take long to download while this
+computer's download speed stays flat at its highest value, the result says that
+the test computer's connection (e.g. Wi-Fi or a phone hotspot), not the server,
+was probably the limit. If it was overloaded, the result says so first: *"The test
 computer was overloaded, so these results are not reliable"*, with a CPU / memory
 chart in the report.
 
@@ -171,6 +203,7 @@ It recognises, among others:
 | timeouts with no answer at all | requests queued: workers busy, blocked event loop, slow database / backend |
 | HTML arrived but the page never finished | a script, image or API call of the page hung (listed) |
 | the test computer's CPU at 90 %+ / memory full | the test computer, not the site, limited the results |
+| fast first byte, slow downloads, download speed flat at its maximum | the test computer's internet connection was the limit |
 | HTML arrived quickly, many browser users, pages never finished | most likely the test computer (older runs without machine data) |
 | everything fails from some moment until the end | the site went down during the test and did not recover |
 | failures only at the start | cold start, or the first burst of users overloaded the server |
@@ -200,6 +233,7 @@ pageload/
   analysis.py           percentiles, stats, compare, budget (pure functions)
   diagnosis.py          possible reasons for failures / slowness (rule-based, pure functions)
   machine.py            the test computer: capacity, recommended browsers, CPU / memory monitor
+  burst.py              burst test: check before, rounds, recovery watch, verdicts
   diagnosis_html.py     the "Possible reasons" section of the reports
   results.py            reading a run folder
   report.py             HTML report

@@ -263,7 +263,7 @@ class Job:
             self._add_log(f"Check before the test: {'answers' if before.ok else 'NOT answering'} "
                           f"({before.status or before.error}, {before.ms:.0f} ms)")
             if not before.ok:
-                target.problem = (f"The site was not answering before the test ({before.error or before.status}), "
+                target.problem = (f"The check before the test failed ({before.error or before.status}), "
                                   "so no burst was sent.")
             for users in plan.steps if before.ok else ():
                 for number in range(1, plan.rounds + 1):

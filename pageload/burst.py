@@ -19,10 +19,13 @@ Verdict of one burst:  ok · slow · failing · down
 
 from __future__ import annotations
 
+import functools
+import ssl
 import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from .analysis import percentile
@@ -49,18 +52,40 @@ class Check:
     error: str | None = None
 
 
+# System certificate bundles, used when Python itself has none (e.g. python.org Python on macOS
+# before "Install Certificates.command" was run).
+SYSTEM_CA_FILES = ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt")
+
+
+@functools.lru_cache(maxsize=1)
+def ssl_context() -> ssl.SSLContext:
+    """Verifying TLS context; falls back to the operating system's certificates if Python has none."""
+    context = ssl.create_default_context()
+    if not context.cert_store_stats().get("x509_ca"):
+        for path in SYSTEM_CA_FILES:
+            if Path(path).is_file():
+                context.load_verify_locations(cafile=path)
+                break
+    return context
+
+
 def check_url(url: str, timeout_s: float = 15, expect_2xx: bool = True) -> tuple[bool, int | None, float, str | None]:
     """One request like a single visitor: (ok, status, ms, error)."""
     started = time.monotonic()
     request = urllib.request.Request(url, headers=CHECK_HEADERS)
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        with urllib.request.urlopen(request, timeout=timeout_s, context=ssl_context()) as response:
             response.read()
             status = response.status
     except urllib.error.HTTPError as error:
         status = error.code
     except Exception as error:  # noqa: BLE001 - any network problem is a failed check
-        return False, None, (time.monotonic() - started) * 1000, str(error)[:200]
+        text = str(error)
+        if "CERTIFICATE_VERIFY_FAILED" in text:
+            text = ("its HTTPS certificate could not be verified on this computer"
+                    + (" (this Python has no trusted certificates)" if not ssl_context().cert_store_stats().get("x509_ca")
+                       else "") + f": {text}")
+        return False, None, (time.monotonic() - started) * 1000, text[:300]
     ms = (time.monotonic() - started) * 1000
     ok = 200 <= status < 300 if expect_2xx else status < 400
     return ok, status, ms, None if ok else f"HTTP {status}"
@@ -177,7 +202,7 @@ def plan_result(rounds: list[BurstRound], plan_steps: tuple[int, ...], rounds_pe
     handled = [s["users"] for s in steps if s["counts"]["ok"] == s["rounds"]]
     first_problem = next((s for s in steps if s["counts"]["ok"] < s["rounds"]), None)
     if before and not before.get("ok"):
-        answer = "The site was already not answering before the test, so no burst was sent."
+        answer = "The check before the test failed, so no burst was sent."
     elif not steps:
         answer = "No burst finished."
     elif first_problem is None:

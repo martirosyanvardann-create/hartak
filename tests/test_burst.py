@@ -74,7 +74,14 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(result["answer"], "Errors at 20 users at the same moment. 10 users at once: handled in all "
                                            "2 rounds. 20 users at once: 1 handled, 1 failing (of 2 rounds); after "
                                            "the burst the site needed up to 40 s to answer again.")
-        self.assertIn("already not answering", plan_result([], (10,), 1, {"ok": False})["answer"])
+        self.assertIn("check before the test failed", plan_result([], (10,), 1, {"ok": False})["answer"])
+
+
+class CertificateTest(unittest.TestCase):
+    def test_context_has_trusted_certificates(self):
+        """python.org Python on macOS ships without certificates: the system bundle is used then."""
+        from pageload.burst import ssl_context
+        self.assertGreater(ssl_context().cert_store_stats().get("x509_ca", 0), 0)
 
 
 class WatcherTest(unittest.TestCase):
@@ -149,7 +156,7 @@ class BurstJobTest(unittest.TestCase):
         job = self.job(runner, [(False, 503, 10, "HTTP 503")])
         job.run()
         self.assertEqual(runner.calls, [])
-        self.assertIn("not answering before the test", job.status()["targets"][0]["problem"])
+        self.assertIn("check before the test failed", job.status()["targets"][0]["problem"])
 
     def test_site_goes_down_and_test_stops(self):
         runner = BurstRunner(fail_at={30})

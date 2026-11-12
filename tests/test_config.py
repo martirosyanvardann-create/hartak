@@ -1,6 +1,9 @@
 import unittest
 
 from pageload.config import ApiRequest, RunConfig, Settings, ValidationError
+from pageload.modes import MODES
+
+REC = MODES["browser"].limits.recommended_vus   # depends on this computer
 
 
 def config(**overrides):
@@ -24,15 +27,29 @@ class RunConfigTest(unittest.TestCase):
         self.assertEqual(c.expected_status(), "2xx")
 
     def test_above_recommended_runs_with_warning(self):
-        c = config(vus=25, iterations=2000)
+        c = config(vus=REC + 5, iterations=2000)
         warnings = c.warnings()
         self.assertEqual(len(warnings), 2)
-        self.assertIn("25 parallel users is more than the recommended 20", warnings[0])
+        self.assertIn(f"{REC + 5} browser users is more than the recommended {REC}", warnings[0])
+        self.assertIn("hybrid mode", warnings[0])
         self.assertIn("2000 visits per URL", warnings[1])
         self.assertEqual(c.to_dict()["warnings"], warnings)
 
     def test_within_recommended_has_no_warnings(self):
-        self.assertEqual(config(vus=20, iterations=1000).warnings(), [])
+        self.assertEqual(config(vus=REC, iterations=1000).warnings(), [])
+
+    def test_hybrid_mode(self):
+        c = config(vus=30, iterations=30, browsers=3)
+        self.assertEqual((c.measuring_users, c.load_users), (3, 27))
+        self.assertEqual(c.warnings(), [])                     # 3 browsers is fine
+        self.assertEqual(c.time_limit_s(), 10 * (30 + 30) + 30)  # 10 visits per browser
+        self.assertEqual(c.mode.k6_vars(c, "https://a.am/", __import__("pathlib").Path("/tmp"))["VUS"], "3")
+        self.assertEqual(config(vus=30, iterations=30, browsers=30).browsers, None)   # all browsers
+        self.assertEqual(config(vus=5, iterations=30, apiOnly=True, browsers=2).load_users, 0)
+        with self.assertRaises(ValidationError):
+            config(vus=5, iterations=30, browsers=6)
+        with self.assertRaises(ValidationError):
+            config(vus=30, iterations=4, browsers=5)
         self.assertEqual(config(vus=200, iterations=10000, apiOnly=True).warnings(), [])
 
     def test_api_warning_mentions_the_tested_site(self):

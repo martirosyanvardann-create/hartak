@@ -60,6 +60,39 @@ def target_stats(visits: list[dict[str, Any]], summary: dict[str, Any], mode: Te
     }
 
 
+def load_stats(visits: list[dict[str, Any]], users: int) -> dict[str, Any] | None:
+    """Hybrid mode: what the background HTTP load users did and how the server answered them."""
+    if not visits:
+        return None
+    from datetime import datetime  # local: only needed here
+
+    def when(v: dict[str, Any]) -> float | None:
+        try:
+            return datetime.fromisoformat(str(v.get("startedAt")).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+    times = [t for t in (when(v) for v in visits) if t is not None]
+    seconds = (max(times) - min(times)) if len(times) > 1 else 0
+    passed = sum(1 for v in visits if v.get("passed"))
+    errors: dict[str, int] = {}
+    for v in visits:
+        if not v.get("passed"):
+            key = (v.get("error") or "failed").split(": ", 1)[-1][:80]
+            errors[key] = errors.get(key, 0) + 1
+    return {
+        "users": users,
+        "requests": len(visits),
+        "passed": passed,
+        "failed": len(visits) - passed,
+        "perSecond": len(visits) / seconds if seconds else None,
+        "durationS": seconds,
+        "ttfb": describe(_values(visits, "ttfbMs")),
+        "total": describe(_values(visits, "totalMs")),
+        "errors": sorted(({"error": k, "count": n} for k, n in errors.items()), key=lambda e: -e["count"])[:5],
+    }
+
+
 def diff(a: float | None, b: float | None) -> dict[str, Any]:
     """How ``b`` did compared with ``a``; lower is better.
 

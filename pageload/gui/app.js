@@ -13,7 +13,7 @@
   const SETTING_FIELDS = ['timeoutSec', 'timeLimitSec', 'expectStatus', 'budgetP95Ms', 'screen', 'viewportWidth', 'viewportHeight', 'locale', 'screenshots'];
   const FORM_FIELDS = ['url', 'compareUrl', 'vus', 'iterations', 'waitUntil', 'apiOnly', 'method', 'headers', 'body', ...SETTING_FIELDS, 'resetSettings'];
   // Headers and body may hold tokens, so they are never saved in the browser.
-  const SAVED_FIELDS = ['url', 'compareUrl', 'vus', 'iterations', 'waitUntil', 'apiOnly', 'method', ...SETTING_FIELDS];
+  const SAVED_FIELDS = ['url', 'compareUrl', 'vus', 'browsers', 'iterations', 'waitUntil', 'apiOnly', 'method', ...SETTING_FIELDS];
 
   let CONFIG = null;          // from GET /api/config
   let SETTING_DEFAULTS = {};  // form values that mean "default"
@@ -56,6 +56,7 @@
       url: $('url').value.trim(),
       compareUrl: $('compareUrl').value.trim(),
       vus: Number($('vus').value),
+      browsers: $('browsers').value.trim() === '' ? null : Number($('browsers').value),
       iterations: Number($('iterations').value),
       waitUntil: $('waitUntil').value,
       apiOnly: $('apiOnly').checked,
@@ -84,6 +85,8 @@
     const mode = modeOf(api);
     $('apiFields').hidden = !api;
     $('waitUntilField').hidden = api;
+    $('browsersField').hidden = api;
+    $('browsers').max = $('vus').value || 1;
     $('browserSettings').hidden = api;
     $('iterationsLabel').textContent = `Total ${mode.noun} per URL`;
     $('timeoutLabel').textContent = `Timeout per ${mode.nounSingular} (s)`;
@@ -101,13 +104,25 @@
     const mode = modeOf(f.apiOnly);
     const limits = mode.limits;
     const notes = [];
-    if (f.vus > limits.recommendedVus && f.vus <= limits.vus) {
+    if (!f.apiOnly) {
+      const browsers = measuring(f);
+      if (browsers > limits.recommendedVus && f.vus <= limits.vus) {
+        notes.push(`${browsers} browser users is more than the recommended ${limits.recommendedVus} for this computer: ${limits.loadNote}.`);
+      }
+      const api = modeOf(true).limits;
+      if (f.vus - browsers > api.recommendedVus) notes.push(`${f.vus - browsers} load users: ${api.loadNote}.`);
+    } else if (f.vus > limits.recommendedVus && f.vus <= limits.vus) {
       notes.push(`${f.vus} parallel users is more than the recommended ${limits.recommendedVus} for ${mode.kind} tests: ${limits.loadNote}.`);
     }
     if (f.iterations > limits.recommendedIterations && f.iterations <= limits.iterations) {
       notes.push(`${f.iterations} ${mode.noun} per URL is more than the recommended ${limits.recommendedIterations}: the run will take a long time.`);
     }
     return notes;
+  }
+
+  // Users that run the measured visits: the real browsers (hybrid mode) or all users.
+  function measuring(f) {
+    return !f.apiOnly && f.browsers && f.browsers < f.vus ? f.browsers : f.vus;
   }
 
   function showWarnings(id, notes) {
@@ -134,13 +149,22 @@
     applyMode();
     const f = readForm();
     const mode = modeOf(f.apiOnly);
-    const users = `${f.vus} parallel ${f.vus === 1 ? 'user' : 'users'}`;
+    const browsers = measuring(f);
+    const hybrid = !f.apiOnly && browsers < f.vus;
+    const users = hybrid
+      ? `<b>${browsers} real ${browsers === 1 ? 'browser' : 'browsers'}</b>, while <b>${f.vus - browsers} more users</b> load the same page with plain HTTP requests (hybrid: ${f.vus} users in total)`
+      : `<b>${f.vus} parallel ${f.vus === 1 ? 'user' : 'users'}</b>`;
     $('formSummary').innerHTML = f.vus && f.iterations
-      ? `${f.apiOnly ? `API test (${esc(f.method)}, no browser): each` : 'Each'} URL gets <b>${f.iterations}</b> ${mode.noun} shared by <b>${users}</b>` +
+      ? `${f.apiOnly ? `API test (${esc(f.method)}, no browser): each` : 'Each'} URL gets <b>${f.iterations}</b> ${mode.noun} measured by ${users}` +
         (f.compareUrl ? ' — URLs run one after the other, so they don’t slow each other down.' : '.') +
         settingsSummary(f)
       : '';
     showWarnings('formWarning', formWarnings(f));
+    if (!f.apiOnly && measuring(f) > mode.limits.recommendedVus && f.vus > 3 && f.iterations >= 3) {
+      $('formWarning').insertAdjacentHTML('beforeend',
+        `<p><button type="button" class="btn-hybrid" id="useHybrid">Use hybrid mode: 3 real browsers + ${f.vus - 3} HTTP load users</button></p>`);
+      $('useHybrid').addEventListener('click', () => { $('browsers').value = 3; updateSummary(); });
+    }
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(SAVED_FIELDS.map((k) => [k, fieldValue(k)]))));
     } catch { /* storage unavailable: the form still works */ }
@@ -172,7 +196,10 @@
     const { vus, iterations } = mode.limits;
     if (!Number.isInteger(f.vus) || f.vus < 1 || f.vus > vus) return `Parallel users must be 1–${vus} (the maximum for ${mode.kind} tests).`;
     if (!Number.isInteger(f.iterations) || f.iterations < 1 || f.iterations > iterations) return `Total ${mode.noun} must be 1–${iterations} (the maximum).`;
-    if (f.vus > f.iterations) return `Parallel users (${f.vus}) can’t be more than total ${mode.noun} (${f.iterations}).`;
+    if (!f.apiOnly && f.browsers != null && (!Number.isInteger(f.browsers) || f.browsers < 1 || f.browsers > f.vus)) {
+      return `Real browsers must be 1–${f.vus} (at most the parallel users), or empty for all users.`;
+    }
+    if (measuring(f) > f.iterations) return `${measuring(f) < f.vus ? 'Real browsers' : 'Parallel users'} (${measuring(f)}) can’t be more than total ${mode.noun} (${f.iterations}).`;
     for (const [key, [low, high]] of Object.entries(CONFIG.settings.ranges)) {
       const value = f.settings[key];
       if (value != null && (!Number.isInteger(value) || value < low || value > high)) {
@@ -318,10 +345,20 @@
         <div class="kpi"><div class="k">${api ? 'Response size' : 'Transferred'} · median${hint(api ? 'size' : 'transfer')}</div><div class="v">${fmtSize(s.transferMed)}</div></div>
       </div>
       ${t.budget ? `<div class="budget ${t.budget.passed ? 'ok' : 'bad'}">${t.budget.passed ? '✓' : '✗'} Budget: ${esc(mainLabel.toLowerCase())} p95 ${fmtMs(t.budget.p95Ms)} ${t.budget.passed ? '≤' : '>'} ${fmtMs(t.budget.limitMs)}</div>` : ''}
+      ${s.load ? `<div class="runline">Background load: <b>${s.load.users} HTTP users</b> sent ${s.load.requests} requests${s.load.perSecond ? ` (${s.load.perSecond.toFixed(1)}/s)` : ''} · ${s.load.failed ? `<span class="bad">${s.load.failed} failed</span>` : 'none failed'} · first byte median ${fmtMs(s.load.ttfb.med)}</div>` : ''}
+      ${machineLine(s.machine)}
       ${t.problem ? `<div class="problem">${esc(t.problem)}</div>` : ''}
       ${s.diagnosis ? diagnosisBlock(s.diagnosis, s.report)
         : s.errors.length ? `<ul class="errors">${s.errors.map((e) => `<li>${api ? 'Request' : 'Visit'} ${e.visit}: ${esc(e.error)}</li>`).join('')}</ul>` : ''}
     </div>`;
+  }
+
+  // The test computer's own load during the run: overloaded means the timings are not reliable.
+  function machineLine(m) {
+    if (!m || m.cpuMax == null) return '';
+    const busy = Math.round((m.busyShare || 0) * 100);
+    const over = busy >= 25 || (m.memoryMax || 0) >= 95;
+    return `<div class="runline ${over ? 'bad' : ''}">${over ? '⚠ ' : ''}Test computer: CPU max ${Math.round(m.cpuMax)}%${busy ? `, 90%+ for ${busy}% of the run` : ''} · memory max ${Math.round(m.memoryMax ?? 0)}%${over ? ' — overloaded, timings not reliable' : ''}</div>`;
   }
 
   // "Possible reasons": failures by type, then each finding (click to see reasons and what to check).
@@ -466,6 +503,9 @@
     passed: ['Passed',
       'Visits or requests that got the expected HTTP status and finished, out of all you asked for. Ones that failed or hung count as not passed.', null],
     compare: ['Comparison badge', 'How the second URL did against the first for that row: “2.0× slower” means it took twice as long.', null],
+    browsers: ['Real browsers (hybrid mode)',
+      'Every browser user is a full Chrome page on this computer, so many of them overload it and measure the computer instead of the site. Set a small number (e.g. 3): those real browsers measure the page while the other users load the same page with plain HTTP requests, each about once every 5 seconds like a visitor. That costs this computer almost nothing. Empty = every user is a real browser.',
+      'Recommended for more than a few users'],
     setTimeout: ['Timeout', 'How long one visit (browser) or request (API) may take before it counts as failed. Empty = 30 seconds.', null],
     setLimit: ['Time limit per URL',
       'Maximum time for all visits to one URL. Visits still running then are stopped and reported as hung. Empty = automatic, based on users, visits and timeout.', null],

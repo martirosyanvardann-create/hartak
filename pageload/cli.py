@@ -61,6 +61,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("compare_url", nargs="?")
     run.add_argument("--vus", type=int, default=5, help="parallel users (default 5)")
     run.add_argument("--visits", type=int, default=30, help="visits/requests per URL (default 30)")
+    run.add_argument("--browsers", type=int, metavar="N",
+                     help="hybrid mode: N real browsers measure, the other users load the page with HTTP requests")
     run.add_argument("--wait-until", choices=WAIT_MODES, default="load")
     run.add_argument("--api", action="store_true", help="API test: plain HTTP requests, no browser")
     run.add_argument("--method", default="GET", help="HTTP method for --api (default GET)")
@@ -102,7 +104,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         config = RunConfig.from_dict({
             "url": args.url, "compareUrl": args.compare_url,
-            "vus": args.vus, "iterations": args.visits, "waitUntil": args.wait_until,
+            "vus": args.vus, "iterations": args.visits, "waitUntil": args.wait_until, "browsers": args.browsers,
             "apiOnly": args.api, "method": args.method,
             "headers": "\n".join(args.header), "body": args.body,
         })
@@ -157,6 +159,15 @@ def format_result(status: dict[str, Any]) -> str:
                        f"run time {round((stats['runtimeMs'] or 0) / 1000)} s")
         else:
             out.append(f"{host:<24} no results")
+        load = (stats or {}).get("load")
+        if load:
+            out.append(f"{'':<24} background load: {load['users']} HTTP users, {load['requests']} requests, "
+                       f"{load['failed']} failed, first byte median {ms(load['ttfb']['med'])}")
+        machine = (stats or {}).get("machine")
+        if machine and machine.get("cpuMax") is not None:
+            out.append(f"{'':<24} test computer: CPU max {round(machine['cpuMax'])}%, "
+                       f"90%+ for {round((machine.get('busyShare') or 0) * 100)}% of the run, "
+                       f"memory max {round(machine.get('memoryMax') or 0)}%")
         if target.get("budget"):
             budget = target["budget"]
             mark = "✓" if budget["passed"] else "✗"

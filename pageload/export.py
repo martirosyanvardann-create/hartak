@@ -82,9 +82,10 @@ def visits_csv(run_dir: Path) -> str:
 
 
 def run_diagnosis(run_dir: Path) -> dict[str, Any]:
+    from .report import background_load   # local: report imports this module's neighbours
     data = load_run(run_dir)
     return diagnosis.diagnose(data.visits, data.summary, mode=get_mode(data.summary.get("mode")),
-                              other_lines=data.other_lines)
+                              other_lines=data.other_lines, machine=data.machine, load=background_load(run_dir))
 
 
 def problems_csv(items: list[tuple[str, dict[str, Any] | None]]) -> str:

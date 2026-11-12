@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 from .analysis import percentile
 from .formatting import size
+from .machine import CPU_BUSY, overloaded
 from .modes import TestMode
 
 LEVELS = ("critical", "warning", "info")
@@ -141,10 +142,12 @@ def _bucket_size(span_s: float) -> int:
 # -- main entry -------------------------------------------------------------------------
 def diagnose(visits: list[dict[str, Any]], summary: dict[str, Any] | None = None, *,
              mode: TestMode, vus: int | None = None, expected: int | None = None,
-             timeout_ms: float | None = None, other_lines: Iterable[str] = ()) -> dict[str, Any]:
+             timeout_ms: float | None = None, other_lines: Iterable[str] = (),
+             machine: dict[str, Any] | None = None, load: dict[str, Any] | None = None) -> dict[str, Any]:
+    """``machine``: CPU / memory of the test computer during the run (see pageload.machine)."""
     summary = summary or {}
     visits = list(visits)
-    ctx = _Context(visits, summary, mode, vus, expected, timeout_ms, list(other_lines))
+    ctx = _Context(visits, summary, mode, vus, expected, timeout_ms, list(other_lines), machine, load)
     findings = ctx.findings()
     findings.sort(key=lambda f: LEVELS.index(f["level"]))
     serious = [f for f in findings if f["level"] != "info"]
@@ -158,11 +161,15 @@ def diagnose(visits: list[dict[str, Any]], summary: dict[str, Any] | None = None
         "resources": ctx.resources(),
         "answers": ctx.answers(),
         "notes": ctx.notes(),
+        "machine": machine,
+        "load": load,
     }
 
 
 class _Context:
-    def __init__(self, visits, summary, mode, vus, expected, timeout_ms, other_lines):
+    def __init__(self, visits, summary, mode, vus, expected, timeout_ms, other_lines, machine=None, load=None):
+        self.machine = machine
+        self.load = load
         self.visits = sorted(visits, key=lambda v: v.get("startedAt") or "")
         self.summary = summary
         self.mode = mode
@@ -215,7 +222,7 @@ class _Context:
     def findings(self) -> list[dict[str, Any]]:
         if not self.visits:
             return []
-        rules = (self._outage, self._config_errors, self._gateway_and_server_errors, self._timeouts,
+        rules = (self._test_computer, self._background_load, self._outage, self._config_errors, self._gateway_and_server_errors, self._timeouts,
                  self._slow_start, self._network_errors, self._test_browser, self._missing,
                  self._load_growth, self._queued_together, self._where_time_goes, self._resources_failing,
                  self._heavy_page)
@@ -368,7 +375,23 @@ class _Context:
                         "(nginx $request_time / $upstream_response_time)",
                         "Traces / slow logs of the backend and database calls the page makes on the server",
                         "How many app workers or instances run, and their limits"]))
-        if html_arrived:
+        if html_arrived and self.computer_suspect():
+            docs = [v["documentMs"] for v in html_arrived if isinstance(v.get("documentMs"), (int, float))]
+            out.append(self.finding(
+                level, "test computer",
+                "The HTML arrived, but the test computer could not finish the pages in time",
+                f"{len(html_arrived)} of {total} {self.noun} received the HTML"
+                + (f" after {round(percentile(docs, 50) / 1000, 1)} s (median)" if docs else "")
+                + f", so the server answered. The browser then did not reach the load state within "
+                f"{self.timeout_s} s while {self.vus} browser users shared this computer.",
+                evidence=[f"Failed page resources: {len(self.resources()['failing'])} — nothing on the site failed"
+                          if not self.resources()["failing"] else None],
+                reasons=["Every browser user downloads, runs and draws the whole page on this computer; "
+                         "too many at once and they wait for CPU",
+                         "Less likely: a resource of the page kept loading (see the resource tables)"],
+                checks=["Run again with fewer browsers, or in hybrid mode (a few browsers + HTTP load)",
+                        "Run the same users in API-only mode: if that passes, the server is fine"]))
+        elif html_arrived:
             resources = self.resources()
             top = [f"{r['url']} — {r['problem']}" for r in resources["failing"][:3]]
             out.append(self.finding(
@@ -383,6 +406,62 @@ class _Context:
                 checks=["The failing / slowest resources listed in this report",
                         "Run with Wait until = load to see if only late requests are the problem"]))
         return out
+
+    def computer_suspect(self) -> bool:
+        """The test computer, not the site, is the likely cause of the failures."""
+        if self.machine:
+            return overloaded(self.machine)
+        if not self.browser or self.vus <= self.mode.limits.recommended_vus:
+            return False
+        arrived = [v for v in self.by_kind.get("timeout", []) if v.get("documentStatus") is not None]
+        docs = [v["documentMs"] for v in arrived if isinstance(v.get("documentMs"), (int, float))]
+        return len(arrived) >= 0.5 * self.total() and bool(docs) and percentile(docs, 50) <= 10_000
+
+    def _test_computer(self) -> list[dict]:
+        m = self.machine
+        if not m or not overloaded(m):
+            return []
+        busy = round((m.get("busyShare") or 0) * 100)
+        recommended = m.get("recommendedBrowsers") or self.mode.limits.recommended_vus
+        level = "critical" if self.failed or busy >= 50 else "warning"
+        users = f"{self.vus} browser users" if self.browser else f"{self.vus} users"
+        return [self.finding(
+            level, "test computer", "The test computer was overloaded, so these results are not reliable",
+            f"During the run this computer's CPU was at {round(CPU_BUSY)}% or more for {busy}% of the time "
+            f"(max {m.get('cpuMax')}%), memory up to {m.get('memoryMax')}%. {users} ran on "
+            f"{m.get('cores')} cores and {m.get('memoryGb')} GB; it can run about {recommended} browser users "
+            "reliably. Timeouts and slow timings in this run partly or fully come from this computer, not from "
+            "the site.",
+            reasons=["Every browser user is a full Chrome page on this computer: it downloads, runs and draws the "
+                     "whole page, about one CPU core and 200–400 MB each",
+                     "In Docker, the container only gets the CPU and memory Docker Desktop allows"],
+            checks=[f"Hybrid mode: about {max(1, min(3, recommended))} real browsers measure while the other users "
+                    "create the load with plain HTTP requests",
+                    f"Or at most {recommended} browser users",
+                    "Or API-only mode to test only the server",
+                    "Docker: give Docker Desktop more CPU and memory (Settings → Resources)"])]
+
+    def _background_load(self) -> list[dict]:
+        """Hybrid mode: the HTTP load users' own results are server-side evidence."""
+        load = self.load
+        if not load or not load.get("requests"):
+            return []
+        share = load["failed"] / load["requests"]
+        ttfb = (load.get("ttfb") or {}).get("med")
+        rate = f", {load['perSecond']:.1f} per second" if load.get("perSecond") else ""
+        summary = (f"{load['users']} background users sent {load['requests']} requests{rate}; "
+                   f"{load['failed']} failed" + (f", median first byte {round(ttfb)} ms" if ttfb else "") + ".")
+        if share >= 0.05:
+            return [self.finding(
+                "critical" if share >= 0.2 else "warning", "server",
+                f"The server also failed the background load ({round(share * 100)}% of its requests)",
+                summary + " These are plain HTTP requests without a browser, so these failures come from the "
+                "server, not from the test computer.",
+                evidence=[f"{e['count']}× {e['error']}" for e in load.get("errors") or []],
+                reasons=["The server cannot handle this many users at once (see the other findings for how)"],
+                checks=["Server CPU, memory and app logs during the test"])]
+        return [self.finding("info", "server", "Background load: the server answered the HTTP load users",
+                             summary)]
 
     def _outage(self) -> list[dict]:
         """A block of failures at the end of the run: the site went down and did not come back."""
@@ -475,7 +554,7 @@ class _Context:
                 checks=["Run again with fewer parallel users"]))
         recommended = self.mode.limits.recommended_vus
         timeouts = self.by_kind.get("timeout", [])
-        if self.browser and self.vus > recommended and timeouts:
+        if self.browser and self.vus > recommended and timeouts and not self.computer_suspect():
             out.append(self.finding(
                 "info", "test computer", "The test computer may also be a bottleneck",
                 f"{self.vus} browser users is more than the recommended {recommended}: every user is a real "
@@ -557,7 +636,7 @@ class _Context:
                     "Whether the app runs one process or several (cluster / replicas)"])]
 
     def _where_time_goes(self) -> list[dict]:
-        if not self.browser:
+        if not self.browser or self.computer_suspect():   # the time went to the overloaded test computer
             return []
         pairs = [(v["ttfbMs"], v["fullyLoadedMs"]) for v in self.passed
                  if isinstance(v.get("ttfbMs"), (int, float)) and isinstance(v.get("fullyLoadedMs"), (int, float))]
@@ -681,6 +760,8 @@ class _Context:
         for v in self.visits:
             seen = set()
             for r in v.get("failedRequests") or []:
+                if "ERR_ABORTED" in str(r.get("error") or ""):
+                    continue    # cancelled when the test closed the page (e.g. analytics beacons): not a failure
                 url = _short_url(r.get("url"))
                 entry = failing.setdefault(url, {"url": url, "visits": 0, "problems": Counter(), "type": r.get("type")})
                 if url not in seen:

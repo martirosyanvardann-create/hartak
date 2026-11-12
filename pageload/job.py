@@ -29,10 +29,13 @@ from .chrome import SharedChrome
 from .config import RunConfig
 from .formatting import host_of
 from .k6 import K6Result, K6Runner, find_k6
+from .machine import MachineMonitor
+from .modes import MODES, load_k6_vars
 from .report import build_report
-from .results import REPORT_HTML, count_visits, load_run
+from .results import LOAD_DIR, MACHINE_JSON, REPORT_HTML, count_visits, load_run
 
 LOG_LINES = 200
+LOAD_WARMUP_S = 5           # load runs this long before the browsers start measuring
 RESULT_SUFFIX = ".json"     # reports/<job id>.json: the saved result of a finished run
 log = logging.getLogger("pageload.job")
 
@@ -104,15 +107,20 @@ class Job:
                  runner_factory: Callable[[], Runner] | None = None,
                  browser_factory: Callable[[], ContextManager[Any]] = SharedChrome,
                  report_builder: Callable[[Path], Path] = build_report,
+                 monitor_factory: Callable[[], Any] = MachineMonitor,
+                 load_warmup_s: float = LOAD_WARMUP_S,
                  clock: Callable[[], float] = time.time):
         self.config = config
         self.mode = config.mode
         self._runner_factory = runner_factory
         self._browser_factory = browser_factory
         self._report_builder = report_builder
+        self._monitor_factory = monitor_factory
+        self._load_warmup_s = load_warmup_s
         self._clock = clock
         self._lock = threading.Lock()
         self._runner: Runner | None = None
+        self._load_runner: Runner | None = None
         self._stop_requested = False
 
         self.state = JobState.RUNNING
@@ -176,7 +184,7 @@ class Job:
                 if self._stop_requested:
                     break
                 self.current = index
-                self._run_target(target, runner_factory())
+                self._run_target(target, runner_factory)
         except Exception as error:  # noqa: BLE001 - reported to the user, never silently lost
             self._add_log(f"Unexpected error: {error}")
             self._transition(JobState.ERROR, f"The run failed: {error}")
@@ -189,8 +197,9 @@ class Job:
         else:
             self._transition(JobState.DONE)
 
-    def _run_target(self, target: Target, runner: Runner) -> None:
+    def _run_target(self, target: Target, runner_factory: Callable[[], Runner]) -> None:
         config, mode = self.config, self.mode
+        runner = runner_factory()
         limit = config.time_limit_s()
         browser = self._browser_factory() if mode.needs_browser else contextlib.nullcontext()
         with browser as chrome:
@@ -203,23 +212,70 @@ class Job:
             self._runner = runner
             if self._stop_requested:
                 return
-            result = runner.run(
-                mode.script, mode.k6_vars(config, target.url, target.run_dir), target.run_dir,
-                extra_env=extra_env,
-                watchdog_s=limit + config.graceful_stop_s + 60,
-                on_line=self._add_log,
-            )
+            monitor = self._monitor_factory()
+            with monitor:
+                load = self._start_load(target, runner_factory) if config.load_users else None
+                result = None
+                try:
+                    if not self._stop_requested:
+                        result = runner.run(
+                            mode.script, mode.k6_vars(config, target.url, target.run_dir), target.run_dir,
+                            extra_env=extra_env,
+                            watchdog_s=limit + config.graceful_stop_s + 60,
+                            on_line=self._add_log,
+                        )
+                finally:
+                    self._stop_load(load)
         self._runner = None
+        if result is None:      # stopped before the measured run started
+            return
+        self._save_machine(target.run_dir, monitor)
         self._report_builder(target.run_dir)
         target.finished = True
         if not self._stop_requested:
             target.problem = diagnose(count_visits(target.run_dir), config.iterations, mode.noun, result, limit)
 
+    def _start_load(self, target: Target, runner_factory: Callable[[], Runner]) -> tuple:
+        """Hybrid mode: start the HTTP load users and let them run for a few seconds."""
+        config = self.config
+        load_dir = target.run_dir / LOAD_DIR
+        runner = runner_factory()
+        self._load_runner = runner
+        self._add_log(f"Starting background load: {config.load_users} HTTP users on {target.url}")
+        thread = threading.Thread(
+            target=runner.run, name="pageload-load",
+            args=(MODES["api"].script, load_k6_vars(config, target.url, load_dir), load_dir),
+            kwargs={"watchdog_s": config.time_limit_s() + config.graceful_stop_s + 120,
+                    "on_line": lambda line: None},
+            daemon=True)
+        thread.start()
+        deadline = self._clock() + self._load_warmup_s
+        while self._clock() < deadline and not self._stop_requested and thread.is_alive():
+            time.sleep(0.2)
+        return runner, thread
+
+    def _stop_load(self, load: tuple | None) -> None:
+        if not load:
+            return
+        runner, thread = load
+        runner.stop()
+        thread.join(30)
+        self._load_runner = None
+
+    @staticmethod
+    def _save_machine(run_dir: Path, monitor: Any) -> None:
+        try:
+            summary = monitor.summary()
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / MACHINE_JSON).write_text(json.dumps(summary), encoding="utf-8")
+        except Exception as error:  # noqa: BLE001 - only diagnostics
+            log.warning("Could not save the test computer load: %s", error)
+
     def stop(self) -> None:
         self._stop_requested = True
-        runner = self._runner
-        if runner:
-            runner.stop()
+        for runner in (self._runner, self._load_runner):
+            if runner:
+                runner.stop()
 
     def _add_log(self, line: str) -> None:
         self.log.append(line)
@@ -248,9 +304,13 @@ class Job:
             if stats is None and target.finished and done > 0:
                 data = load_run(target.run_dir)
                 stats = analysis.target_stats(data.visits, data.summary, mode)
+                load_visits = load_run(target.run_dir / LOAD_DIR).visits if config.load_users else []
+                stats["load"] = analysis.load_stats(load_visits, config.load_users)
                 stats["diagnosis"] = diagnosis.diagnose(
-                    data.visits, data.summary, mode=mode, vus=config.vus, expected=config.iterations,
-                    timeout_ms=config.settings.timeout_s * 1000, other_lines=data.other_lines)
+                    data.visits, data.summary, mode=mode, vus=config.measuring_users, expected=config.iterations,
+                    timeout_ms=config.settings.timeout_s * 1000, other_lines=data.other_lines,
+                    machine=data.machine, load=stats["load"])
+                stats["machine"] = {k: v for k, v in (data.machine or {}).items() if k != "samples"} or None
                 report = target.run_dir / REPORT_HTML
                 stats["report"] = f"/reports/{target.run_dir.name}/{REPORT_HTML}" if report.exists() else None
                 stats["reportPath"] = str(report) if report.exists() else None
@@ -290,6 +350,8 @@ class Job:
             "noun": mode.noun,
             "settings": config.settings.to_dict(),
             "vus": config.vus,
+            "browsers": config.browsers,
+            "loadUsers": config.load_users,
             "iterations": config.iterations,
             "warnings": config.warnings(),
             "waitUntil": config.wait_until,

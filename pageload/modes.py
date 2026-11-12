@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .machine import recommended_browsers
 from .paths import K6_DIR
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -123,11 +124,13 @@ class BrowserMode(TestMode):
         Timing("fullyLoadedMs", "Fully loaded", "load event or last request, whichever is later"),
     )
     main_metric = "fullyLoadedMs"
-    # Each user runs a real Chrome page: past ~20 the computer, not the site, sets the timings.
+    # Each user runs a real Chrome page on this computer: the recommendation comes from its
+    # cores and memory (pageload.machine). Above it the computer, not the site, sets the timings.
     limits = Limits(
-        recommended_vus=20, recommended_iterations=1000, max_vus=200, max_iterations=100_000,
-        load_note="each browser user runs a real Chrome page, so timings may partly reflect "
-                  "this computer's CPU and memory, not only the site",
+        recommended_vus=recommended_browsers(), recommended_iterations=1000, max_vus=200, max_iterations=100_000,
+        load_note="each browser user is a real Chrome page on this computer, so more of them measure this "
+                  "computer's CPU and memory instead of the site. For more users use hybrid mode: a few real "
+                  "browsers measure while the other users create the load with plain HTTP requests",
     )
     default_expect_status = "200"
     overhead_per_visit_s = 30
@@ -137,6 +140,7 @@ class BrowserMode(TestMode):
         settings = config.settings
         variables = {
             "PROFILE": "parallel",
+            "VUS": str(config.measuring_users),     # hybrid mode: only the real browsers
             "WAIT_UNTIL": config.wait_until,
             "VIEWPORT_WIDTH": str(settings.viewport_width),
             "VIEWPORT_HEIGHT": str(settings.viewport_height),
@@ -145,6 +149,30 @@ class BrowserMode(TestMode):
         if settings.locale:
             variables["LOCALE"] = settings.locale
         return variables
+
+
+LOAD_PACE_MS = 5000     # hybrid mode: one page request per load user every 5 s
+
+
+def load_k6_vars(config: "RunConfig", url: str, report_dir: Path) -> dict[str, str]:
+    """Hybrid mode: variables for the background HTTP load (api-test.js with LOAD=1).
+
+    Each load user requests the page about once every LOAD_PACE_MS (like one browser
+    visit), until the tool stops the load when the measured browser visits are done.
+    """
+    return {
+        "LOAD": "1",
+        "LOAD_PACE_MS": str(LOAD_PACE_MS),
+        "BASE_URL": url,
+        "VUS": str(config.load_users),
+        "ITERATIONS": "1",
+        "TIMEOUT_MS": str(config.settings.timeout_s * 1000),
+        "EXPECT_STATUS": config.settings.expect_status or "2xx",
+        "MAX_DURATION": f"{config.time_limit_s() + config.graceful_stop_s + 60}s",
+        "REPORT_DIR": str(report_dir),
+        "API_METHOD": "GET",
+        "API_HEADERS": "{}",
+    }
 
 
 class ApiMode(TestMode):

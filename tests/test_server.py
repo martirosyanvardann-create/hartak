@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pageload.config import RunConfig
 from pageload.job import Job
+from pageload.modes import MODES
 from pageload.server import JobManager, create_server, resolve_static
 
 from .helpers import FakeBrowser, FakeRunner, browser_visit, no_report
@@ -77,7 +78,8 @@ class ServerTest(unittest.TestCase):
     def test_config(self):
         status, body = self.request("/api/config")
         self.assertEqual(status, 200)
-        self.assertEqual(body["modes"]["browser"]["limits"]["recommendedVus"], 20)
+        self.assertEqual(body["modes"]["browser"]["limits"]["recommendedVus"],
+                         MODES["browser"].limits.recommended_vus)
         self.assertEqual(body["modes"]["browser"]["limits"]["vus"], 200)
         self.assertIn("timeoutSec", body["settings"]["ranges"])
 
@@ -111,14 +113,15 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(body["job"]["state"], "done")
 
     def test_warnings_returned_but_run_starts(self):
-        status, body = self.request("/api/run", {"url": "https://hartak.am/", "vus": 25, "iterations": 25, "wait": True})
+        rec = MODES["browser"].limits.recommended_vus
+        status, body = self.request("/api/run", {"url": "https://hartak.am/", "vus": rec + 5, "iterations": 25, "wait": True})
         # The run starts (the fake k6 writes only 2 of the 25 visits, so it ends as
         # "problem"), and the warning is reported, not turned into an error.
         self.assertEqual(status, 200)
         self.assertNotEqual(body["job"]["state"], "error")
-        self.assertEqual(body["job"]["vus"], 25)
+        self.assertEqual(body["job"]["vus"], rec + 5)
         self.assertEqual(len(body["job"]["warnings"]), 1)
-        self.assertIn("more than the recommended 20", body["job"]["warnings"][0])
+        self.assertIn(f"more than the recommended {rec}", body["job"]["warnings"][0])
 
     def download(self, path):
         try:

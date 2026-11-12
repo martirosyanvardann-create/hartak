@@ -169,6 +169,9 @@ class RunConfig:
     vus: int
     iterations: int
     mode_name: str = "browser"
+    # Browser mode only. None: every user is a real browser. Fewer than vus: hybrid mode,
+    # ``browsers`` real browsers measure while the other users create load with HTTP requests.
+    browsers: int | None = None
     wait_until: str = "load"
     request: ApiRequest = field(default_factory=ApiRequest)
     settings: Settings = field(default_factory=Settings)
@@ -177,6 +180,16 @@ class RunConfig:
     @property
     def mode(self) -> TestMode:
         return get_mode(self.mode_name)
+
+    @property
+    def measuring_users(self) -> int:
+        """Users that run the measured visits (real browsers in browser mode)."""
+        return self.browsers or self.vus
+
+    @property
+    def load_users(self) -> int:
+        """Hybrid mode: users that only create load with plain HTTP requests."""
+        return self.vus - self.measuring_users if self.mode.needs_browser else 0
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "RunConfig":
@@ -202,10 +215,15 @@ class RunConfig:
             if raw.get("vus") not in (None, "") else _missing("Parallel users", errors)
         iterations = _int_in_range(raw, "iterations", f"Total {mode.noun}", 1, mode.limits.max_iterations, 0, errors) \
             if raw.get("iterations") not in (None, "") else _missing(f"Total {mode.noun}", errors)
-        if vus and iterations and vus > iterations:
+        browsers = None
+        if mode.needs_browser and raw.get("browsers") not in (None, "", 0, "0"):
+            browsers = _int_in_range(raw, "browsers", "Real browsers", 1, max(vus, 1), 0, errors) or None
+        measuring = browsers or vus
+        if measuring and iterations and measuring > iterations:
+            who = "Real browsers" if browsers else "Parallel users"
             errors.append(
-                f"Parallel users ({vus}) can't be more than total {mode.noun} ({iterations}): "
-                f"each user needs at least one {mode.noun_singular}."
+                f"{who} ({measuring}) can't be more than total {mode.noun} ({iterations}): "
+                f"each one needs at least one {mode.noun_singular}."
             )
 
         wait_until = str(raw.get("waitUntil") or "load")
@@ -219,14 +237,23 @@ class RunConfig:
 
         if errors:
             raise ValidationError(errors)
+        if browsers == vus:
+            browsers = None
         return cls(urls=tuple(urls), vus=vus, iterations=iterations, mode_name=mode_name,
-                   wait_until=wait_until, request=request, settings=settings)
+                   browsers=browsers, wait_until=wait_until, request=request, settings=settings)
 
     def warnings(self) -> list[str]:
         """Allowed but risky choices: above the recommended users or visits."""
         limits, noun = self.mode.limits, self.mode.noun
         notes = []
-        if self.vus > limits.recommended_vus:
+        if self.mode.needs_browser:
+            if self.measuring_users > limits.recommended_vus:
+                notes.append(f"{self.measuring_users} browser users is more than the recommended "
+                             f"{limits.recommended_vus} for this computer: {limits.load_note}.")
+            api_limits = get_mode("api").limits
+            if self.load_users > api_limits.recommended_vus:
+                notes.append(f"{self.load_users} load users: {api_limits.load_note}.")
+        elif self.vus > limits.recommended_vus:
             notes.append(f"{self.vus} parallel users is more than the recommended {limits.recommended_vus} "
                          f"for {self.mode.kind} tests: {limits.load_note}.")
         if self.iterations > limits.recommended_iterations:
@@ -241,13 +268,15 @@ class RunConfig:
         """Run time limit per URL; visits still running after it count as hung."""
         if self.settings.time_limit_s:
             return self.settings.time_limit_s
-        rounds = -(-self.iterations // self.vus)  # visits per user, rounded up
+        rounds = -(-self.iterations // self.measuring_users)  # visits per user, rounded up
         return rounds * (self.settings.timeout_s + self.mode.overhead_per_visit_s) + 30
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "urls": list(self.urls),
             "vus": self.vus,
+            "browsers": self.browsers,
+            "loadUsers": self.load_users,
             "iterations": self.iterations,
             "mode": self.mode_name,
             "waitUntil": self.wait_until,

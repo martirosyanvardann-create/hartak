@@ -36,6 +36,7 @@ from .chrome import find_chrome
 from .config import HTTP_METHODS, WAIT_MODES, RunConfig, Settings, ValidationError
 from .job import Job
 from .k6 import find_k6
+from .machine import capacity
 from .modes import MODES
 from .paths import GUI_DIR
 
@@ -83,6 +84,7 @@ def config_payload() -> dict[str, Any]:
         "settings": Settings.describe(),
         "waitModes": list(WAIT_MODES),
         "methods": list(HTTP_METHODS),
+        "machine": capacity().to_dict(),
     }
 
 
@@ -94,7 +96,10 @@ API_HELP = {
             "body": {
                 "url": "https://hartak.am/  (required)",
                 "compareUrl": "https://dev.hartak.am/  (optional)",
-                "vus": "parallel users, >= 1. Above 20 (browser) / 200 (API) is allowed but returns a warning",
+                "vus": "parallel users, >= 1. Above the recommended number (browser: depends on this "
+                       "computer, see /api/config; API: 200) is allowed but returns a warning",
+                "browsers": "browser mode, optional: hybrid mode with this many real browsers measuring "
+                            "while the other users load the page with plain HTTP requests (default: all users)",
                 "iterations": "visits/requests per URL, >= vus. Above 1000 / 10000 returns a warning",
                 "waitUntil": "load (default) or networkidle  (browser mode)",
                 "apiOnly": "true = HTTP/API test: plain requests, no browser",

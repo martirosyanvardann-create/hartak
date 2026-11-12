@@ -10,10 +10,18 @@ import sys
 from pathlib import Path
 
 from . import diagnosis, diagnosis_html
-from .analysis import describe, percentile
+from .analysis import describe, load_stats, percentile
 from .formatting import duration, local_time, size
 from .modes import get_mode
-from .results import REPORT_HTML, load_run
+from .results import LOAD_DIR, REPORT_HTML, load_run
+
+
+def background_load(run_dir: Path) -> dict | None:
+    """Hybrid mode: statistics of the background HTTP load users, if this run had them."""
+    if not (run_dir / LOAD_DIR).is_dir():
+        return None
+    visits = load_run(run_dir / LOAD_DIR).visits
+    return load_stats(visits, len({v.get("vu") for v in visits})) if visits else None
 
 
 def _ms(value: float | None) -> str:
@@ -24,6 +32,7 @@ def build_report(run_dir: Path) -> Path:
     """Write ``report.html`` into ``run_dir`` and return its path."""
     data = load_run(run_dir)
     visits, summary = data.visits, data.summary
+    load = background_load(run_dir)
     mode = get_mode(summary.get("mode"))
     api = mode.name == "api"
     e = html.escape
@@ -58,6 +67,8 @@ def build_report(run_dir: Path) -> Path:
     mode_meta = (
         f'<span>Mode <b>API · {e(str(summary.get("method") or "GET"))} (no browser)</b></span>' if api else
         f'<span>Wait until <b>{e(str(summary.get("waitUntil") or "—"))}</b></span>'
+        + (f'<span>Hybrid <b>{summary.get("vus")} browsers + {load["users"]} HTTP load users</b></span>'
+           if load else "") +
         f'<span>Viewport <b>{e(str(summary.get("viewport") or "—"))}</b></span>'
     )
     requests_card = "" if api else (
@@ -65,7 +76,8 @@ def build_report(run_dir: Path) -> Path:
         f'<div class="value">{round(percentile(requests, 50)) if requests else "—"}</div></div>'
     )
 
-    diag = diagnosis.diagnose(visits, summary, mode=mode, other_lines=data.other_lines)
+    diag = diagnosis.diagnose(visits, summary, mode=mode, other_lines=data.other_lines, machine=data.machine,
+                              load=load)
     diag_section = diagnosis_html.render(diag, noun)
 
     page = _TEMPLATE.format(

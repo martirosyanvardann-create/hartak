@@ -7,7 +7,7 @@ from pageload.config import RunConfig
 from pageload.job import Job, JobState, diagnose
 from pageload.k6 import K6Result
 
-from .helpers import FakeBrowser, FakeRunner, browser_visit, no_report
+from .helpers import FakeBrowser, FakeRunner, browser_visit, no_report, visit, write_run
 
 
 def make_job(tmp: Path, runner: FakeRunner, **raw) -> Job:
@@ -152,3 +152,55 @@ class DiagnoseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HybridRunner:
+    """Fake k6 for hybrid mode: the load run keeps going until it is stopped."""
+
+    def __init__(self, browser_visits, load_visits):
+        self.browser_visits, self.load_visits = browser_visits, load_visits
+        self.calls = []
+        self._stopped = threading.Event()
+
+    def run(self, script, k6_vars, out_dir, *, extra_env=None, watchdog_s=None, on_line=lambda line: None):
+        self.calls.append({"script": Path(script).name, "vars": dict(k6_vars)})
+        if k6_vars.get("LOAD") == "1":
+            write_run(out_dir, self.load_visits, {"mode": "api"})
+            self._stopped.wait(10)
+            return K6Result(exit_code=0, elapsed_s=1, stopped=True)
+        write_run(out_dir, self.browser_visits, {"mode": "browser", "totalRuntimeMs": 4000,
+                                                 "expectedVisits": len(self.browser_visits), "vus": 3})
+        return K6Result(exit_code=0, elapsed_s=1)
+
+    def stop(self):
+        self._stopped.set()
+
+
+class HybridJobTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_browsers_measure_while_http_users_load(self):
+        load = [visit(i, startedAt=f"2026-11-12T10:00:{i:02d}Z", ttfbMs=900, totalMs=1200) for i in range(1, 41)]
+        load[0].update(passed=False, error="request: HTTP status 502, expected 2xx")
+        runner = HybridRunner([browser_visit(i, 2000) for i in range(1, 7)], load)
+        config = RunConfig.from_dict({"url": "https://hartak.am/", "vus": 30, "iterations": 6, "browsers": 3})
+        job = Job(config, self.tmp, runner_factory=lambda: runner, browser_factory=FakeBrowser,
+                  report_builder=no_report, load_warmup_s=0)
+        job.run()
+        self.assertIs(job.state, JobState.DONE)
+        load_call, browser_call = runner.calls
+        self.assertEqual((load_call["script"], load_call["vars"]["VUS"], load_call["vars"]["LOAD"]),
+                         ("api-test.js", "27", "1"))
+        self.assertEqual((browser_call["script"], browser_call["vars"]["VUS"]), ("browser-test.js", "3"))
+        status = job.status()
+        self.assertEqual((status["browsers"], status["loadUsers"]), (3, 27))
+        stats = status["targets"][0]["stats"]
+        self.assertEqual((stats["load"]["users"], stats["load"]["requests"], stats["load"]["failed"]), (27, 40, 1))
+        titles = [f["title"] for f in stats["diagnosis"]["findings"]]
+        self.assertIn("Background load: the server answered the HTTP load users", titles)
+        self.assertTrue((job.targets[0].run_dir / "machine.json").exists())

@@ -9,7 +9,8 @@ compared fairly.
 
 | Mode | What runs | Measures | Recommended users / visits | Maximum |
 |---|---|---|---|---|
-| **Browser** (default) | a real headless Chrome per visit | TTFB, FCP, LCP, DOM loaded, load, fully loaded | 20 / 1000 | 200 / 100 000 |
+| **Browser** (default) | a real headless Chrome per visit | TTFB, FCP, LCP, DOM loaded, load, fully loaded | depends on this computer (about 1 per CPU core, max 20) / 1000 | 200 / 100 000 |
+| **Hybrid** (browser mode + *Real browsers*) | a few real Chromes measure while the other users load the page with HTTP requests | same as browser, plus the background load | many users: only the real browsers cost CPU | 200 / 100 000 |
 | **API only** | plain HTTP requests, no browser | connect, TLS, TTFB, receive, total | 200 / 10 000 | 5000 / 1 000 000 |
 
 Above the recommended numbers a run still starts, with a warning (in the form, the
@@ -17,6 +18,29 @@ results, the CLI and the API answer): in browser mode every user is a real Chrom
 page, so too many users measure this computer's load as much as the site; in API
 mode many users mean heavy traffic for the tested site. The maximums only stop
 obvious typos.
+
+## Many users: hybrid mode
+
+In browser mode **every user is a full Chrome page on this computer**: it downloads,
+runs and draws the whole page (about one CPU core and 200–400 MB each). With more
+users than the computer can handle, pages time out or get slow although the site
+is fine — e.g. 30 browser users in Docker on a 10-core Mac: 0 of 30 visits passed,
+CPU at 100%, while 1 user and the API test of the same site were fast.
+
+Set **Real browsers** (GUI) / `"browsers"` (API) / `--browsers` (CLI) to a small
+number, e.g. 3: those real browsers measure the visits while the other users
+request the same page with plain HTTP, each about once every 5 seconds like a
+visitor. Same example in hybrid mode: 3 browsers + 27 HTTP users, 30 of 30 passed,
+fully loaded 2.6 s, CPU at 39%.
+
+The recommended number of browser users is calculated from this computer's cores
+and memory (`PAGELOAD_RECOMMENDED_BROWSERS` overrides it); above it the form shows a
+warning with a one-click switch to hybrid mode.
+
+Every run also records **the test computer's own CPU and memory**
+(`machine.json`). If it was overloaded, the result says so first: *"The test
+computer was overloaded, so these results are not reliable"*, with a CPU / memory
+chart in the report.
 
 ## Requirements
 
@@ -111,6 +135,7 @@ curl -X POST http://127.0.0.1:8000/api/run -H 'Content-Type: application/json' \
 ```bash
 python3 app.py run https://hartak.am/ https://dev.hartak.am/ --vus 20 --visits 40
 python3 app.py run https://hartak.am/ --api --vus 50 --visits 500 --json > result.json
+python3 app.py run https://hartak.am/ --vus 30 --browsers 3 --visits 30   # hybrid
 python3 app.py report reports/<run-folder>      # rebuild a report
 ```
 
@@ -145,6 +170,8 @@ It recognises, among others:
 | 502 / 503 / 504 | the app behind the proxy crashed or restarted, was overloaded, or too slow |
 | timeouts with no answer at all | requests queued: workers busy, blocked event loop, slow database / backend |
 | HTML arrived but the page never finished | a script, image or API call of the page hung (listed) |
+| the test computer's CPU at 90 %+ / memory full | the test computer, not the site, limited the results |
+| HTML arrived quickly, many browser users, pages never finished | most likely the test computer (older runs without machine data) |
 | everything fails from some moment until the end | the site went down during the test and did not recover |
 | failures only at the start | cold start, or the first burst of users overloaded the server |
 | many requests answered together after a long wait | all waited for one shared blocking thing (cache rebuild, one slow call) |
@@ -172,6 +199,7 @@ pageload/
   config.py             RunConfig, Settings, ApiRequest: all input validation
   analysis.py           percentiles, stats, compare, budget (pure functions)
   diagnosis.py          possible reasons for failures / slowness (rule-based, pure functions)
+  machine.py            the test computer: capacity, recommended browsers, CPU / memory monitor
   diagnosis_html.py     the "Possible reasons" section of the reports
   results.py            reading a run folder
   report.py             HTML report

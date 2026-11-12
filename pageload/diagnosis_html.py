@@ -37,6 +37,10 @@ STYLE = """
 .dx-axis { display: flex; justify-content: space-between; color: var(--dx-muted); font-size: 11.5px; margin-top: 4px; }
 .dx-legend { color: var(--dx-muted); font-size: 12px; margin-top: 6px; }
 .dx-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: -1px; }
+.dx-machine { width: 100%; height: 70px; display: block; margin-top: 6px; }
+.dx-cpu { fill: none; stroke: var(--dx-bad); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.dx-mem { fill: none; stroke: var(--dx-info); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.dx-limit { stroke: var(--dx-muted); stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
 .dx table td.wrap { white-space: normal; word-break: break-word; min-width: 220px; }
 .dx-note { color: var(--dx-muted); font-size: 12.5px; }
 </style>
@@ -74,6 +78,7 @@ def render(diag: dict[str, Any] | None, noun: str = "visits") -> str:
             + (f'<ul class="dx-evidence">{evidence}</ul>' if evidence else "")
             + cols + "</div>")
 
+    parts.append(_machine(diag.get("machine")))
     parts.append(_timeline(diag.get("timeline") or {}, noun))
     parts.append(_categories(diag.get("categories") or []))
     parts.append(_answers(diag.get("answers") or []))
@@ -111,6 +116,34 @@ def _timeline(timeline: dict[str, Any], noun: str) -> str:
             f'<div class="dx-axis"><span>{e(first)}</span><span>{e(middle)}</span><span>{e(last)}</span></div>'
             f'<div class="dx-legend"><i class="dx-pass" style="background:var(--dx-ok)"></i>passed'
             f'<i style="background:var(--dx-bad)"></i>failed</div></div>')
+
+
+def _machine(m: dict[str, Any] | None) -> str:
+    """The test computer: capacity, peak load and a CPU / memory chart."""
+    if not m or not m.get("samples"):
+        return ""
+    e = html.escape
+    busy = round((m.get("busyShare") or 0) * 100)
+    text = (f'{m.get("cores")} cores, {m.get("memoryGb")} GB · CPU max {m.get("cpuMax")}%, '
+            f'90 %+ for {busy}% of the run · memory max {m.get("memoryMax")}% · '
+            f'recommended browser users: {m.get("recommendedBrowsers")}')
+    samples = m["samples"]
+    width, height = 900, 70
+    end = max(samples[-1][0], 1)
+
+    def line(index: int) -> str:
+        points = " ".join(f"{s[0] / end * width:.1f},{height - (s[index] or 0) / 100 * height:.1f}"
+                          for s in samples if s[index] is not None)
+        return points
+
+    chart = (f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" class="dx-machine" role="img" '
+             f'aria-label="Test computer CPU and memory during the run">'
+             f'<line x1="0" x2="{width}" y1="{height * 0.1:.1f}" y2="{height * 0.1:.1f}" class="dx-limit"/>'
+             f'<polyline points="{line(1)}" class="dx-cpu"/><polyline points="{line(2)}" class="dx-mem"/></svg>')
+    return (f'<h3>Test computer <span class="dx-note">— this computer\'s own load during the run</span></h3>'
+            f'<div class="panel"><div class="dx-note">{e(text)}</div>{chart}'
+            f'<div class="dx-legend"><i style="background:var(--dx-bad)"></i>CPU'
+            f'<i style="background:var(--dx-info)"></i>memory · dashed line: 90%</div></div>')
 
 
 def _categories(rows: list[dict[str, Any]]) -> str:

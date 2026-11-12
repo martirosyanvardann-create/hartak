@@ -79,15 +79,15 @@ h2 { font-size: 15px; margin: 0 0 14px; font-weight: 650; }
 /* Form */
 form { display: grid; gap: 16px; }
 .urls { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
-.nums { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; }
+.nums { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.nums > div { flex: 1 1 150px; min-width: 0; }
+.nums > .actions { flex: 0 0 auto; }
 @media (max-width: 760px) {
   .urls { grid-template-columns: 1fr; }
-  .nums { grid-template-columns: 1fr 1fr; }
-  .nums > div:nth-child(3), .nums .actions { grid-column: 1 / -1; }
+  .nums > .actions { flex: 1 1 100%; }
   .actions button { flex: 1; }
 }
 @media (max-width: 420px) {
-  .nums { grid-template-columns: 1fr; }
   .kpis { grid-template-columns: 1fr 1fr !important; }
   .card { padding: 16px; }
   .verdict { flex-direction: column; align-items: flex-start; gap: 6px; }
@@ -270,3 +270,10 @@ th .hint { vertical-align: -3px; }
 .finding ul { margin: 2px 0 6px; padding-left: 18px; }
 .finding .evidence { opacity: .8; }
 .finding .sub { font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; opacity: .7; margin-top: 6px; }
+
+.runline { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.runline.bad, .runline .bad { color: var(--bad); }
+
+.btn-hybrid { margin-top: 2px; padding: 6px 12px; border-radius: 8px; border: 1px solid currentColor;
+  background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
+.btn-hybrid:hover { background: color-mix(in srgb, currentColor 12%, transparent); }

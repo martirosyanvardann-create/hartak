@@ -31,7 +31,7 @@
  */
 
 import http from 'k6/http';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
@@ -67,6 +67,12 @@ const BODY = __ENV.API_BODY || null;
 const REPORT_DIR = __ENV.REPORT_DIR || '';
 const EXPECT_STATUS = __ENV.EXPECT_STATUS || '2xx';
 const EXPECTED = parseStatusSpec(EXPECT_STATUS);
+// Hybrid mode (set by the pageload tool): background load while real browsers measure.
+// VUS users repeat the request until the tool ends the run; no fixed count.
+const LOAD = __ENV.LOAD === '1';
+// Like a real visitor, a load user requests the page about once every LOAD_PACE_MS
+// (default 5 s, roughly one browser visit), not as fast as the server answers.
+const LOAD_PACE_MS = integerEnv('LOAD_PACE_MS', 5000);
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
@@ -78,7 +84,7 @@ if (!METHODS.includes(METHOD)) {
   throw new Error(`API_METHOD must be one of ${METHODS.join(', ')}`);
 }
 
-if (VUS > ITERATIONS) {
+if (!LOAD && VUS > ITERATIONS) {
   throw new Error(
     `VUS (${VUS}) cannot be more than ITERATIONS (${ITERATIONS}): ` +
     'each user needs at least one request'
@@ -111,15 +117,24 @@ const completedRequests = new Counter('api_completed_requests');
 const failRate = new Rate('api_fail_rate');
 
 export const options = {
-  scenarios: {
-    api: {
-      executor: 'shared-iterations',
-      vus: VUS,
-      iterations: ITERATIONS,
-      maxDuration: __ENV.MAX_DURATION || '10m',
-      gracefulStop: __ENV.GRACEFUL_STOP || '30s',
+  scenarios: LOAD
+    ? {
+      load: {
+        executor: 'constant-vus',
+        vus: VUS,
+        duration: __ENV.MAX_DURATION || '10m',
+        gracefulStop: '0s',
+      },
+    }
+    : {
+      api: {
+        executor: 'shared-iterations',
+        vus: VUS,
+        iterations: ITERATIONS,
+        maxDuration: __ENV.MAX_DURATION || '10m',
+        gracefulStop: __ENV.GRACEFUL_STOP || '30s',
+      },
     },
-  },
 
   summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)'],
 
@@ -128,7 +143,7 @@ export const options = {
     method: METHOD,
   },
 
-  thresholds: {
+  thresholds: LOAD ? {} : {
     checks: ['rate==1'],
     api_fail_rate: ['rate==0'],
     api_completed_requests: [`count==${ITERATIONS}`],
@@ -234,6 +249,10 @@ export default function () {
 
   if (REPORT_DIR) {
     console.log(`VISIT ${JSON.stringify(visit)}`);
+  }
+
+  if (LOAD) {
+    sleep(Math.max(0, LOAD_PACE_MS - (Date.now() - startedAt)) / 1000);
   }
 }
 

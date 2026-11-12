@@ -4,7 +4,9 @@ A run folder holds:
   console.log    k6 console output; one "VISIT {json}" line per visit/request
   summary.json   written by the script's handleSummary (mode, runtime, ...)
   report.html    written by :mod:`pageload.report`
+  machine.json   CPU / memory of the test computer during the run
   screenshots/   failed browser visits (optional)
+  load/          hybrid mode: console.log of the background HTTP load users
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ VISIT_PREFIX = "VISIT "
 CONSOLE_LOG = "console.log"
 SUMMARY_JSON = "summary.json"
 REPORT_HTML = "report.html"
+MACHINE_JSON = "machine.json"     # CPU / memory of the test computer during the run
+LOAD_DIR = "load"                 # hybrid mode: the background HTTP load's own run folder
 
 
 @dataclass
@@ -25,6 +29,7 @@ class RunData:
     visits: list[dict[str, Any]] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
     other_lines: list[str] = field(default_factory=list)   # console lines that are not visits
+    machine: dict[str, Any] | None = None                  # test computer load (machine.json)
 
 
 def count_visits(run_dir: Path) -> int:
@@ -50,6 +55,13 @@ def load_run(run_dir: Path) -> RunData:
             elif line.strip():
                 data.other_lines.append(line)
     data.visits.sort(key=lambda visit: visit.get("visit", 0))
+
+    machine = run_dir / MACHINE_JSON
+    if machine.exists():
+        try:
+            data.machine = json.loads(machine.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data.machine = None
 
     summary = run_dir / SUMMARY_JSON
     if summary.exists():
